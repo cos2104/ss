@@ -1,0 +1,464 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>『전자기와 양자』 | 교과서 시뮬레이션</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700;900&display=swap');
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  min-height: 100%;
+  font-family: 'Noto Sans KR', system-ui, sans-serif;
+  color: #23303f;
+  background:
+    radial-gradient(circle at 12% 6%, #ffffff3d 0%, transparent 40%),
+    linear-gradient(160deg, #6f9cf0 0%, #4a7fe0 46%, #3558b4 100%);
+  padding: 44px 4vw 60px;
+}
+header { color: #fff; margin-bottom: 12px; }
+header .badge {
+  display: inline-block; font-size: 12.5px; font-weight: 500;
+  background: #ffffff2e; border: 1px solid #ffffff45;
+  border-radius: 999px; padding: 5px 14px; margin-bottom: 12px;
+}
+header h1 { font-size: 32px; font-weight: 900; letter-spacing: -1.1px; margin-bottom: 8px; }
+header p { font-size: 14.5px; opacity: .92; line-height: 1.7; }
+
+.count { color: #ffffffcf; font-size: 13px; margin-bottom: 26px; }
+.count b { color: #fff; }
+
+.book {
+  margin: 38px 0 16px;
+  color: #fff;
+}
+.book h2 {
+  display: inline-block;
+  font-size: 22px; font-weight: 900; letter-spacing: -.7px;
+  background: #ffffff22; border: 1px solid #ffffff45;
+  border-radius: 12px; padding: 8px 18px;
+}
+.book p { font-size: 13px; opacity: .9; margin-top: 8px; }
+
+.unit { margin-bottom: 28px; }
+.unit > h2 {
+  color: #fff; font-size: 17px; font-weight: 700;
+  letter-spacing: -.4px; margin-bottom: 12px;
+  padding-left: 11px; border-left: 4px solid #ffffffa0;
+}
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(268px, 1fr)); gap: 14px; }
+
+.card {
+  display: flex; flex-direction: column;
+  background: #fff; border-radius: 14px;
+  padding: 0 0 15px; overflow: hidden;
+  text-decoration: none; color: inherit;
+  box-shadow: 0 6px 18px #00000026;
+  transition: transform .18s, box-shadow .18s;
+}
+.card:hover { transform: translateY(-4px); box-shadow: 0 14px 30px #00000038; }
+
+.art { height: 92px; position: relative; overflow: hidden; background: #16202e; }
+.card h3 { font-size: 15.5px; font-weight: 900; letter-spacing: -.5px; margin: 12px 15px 5px; }
+.card p { font-size: 12.4px; color: #62718a; line-height: 1.6; margin: 0 15px 10px; flex: 1; }
+.meta { display: flex; gap: 5px; flex-wrap: wrap; margin: 0 15px; }
+.meta span {
+  font-size: 10.5px; font-weight: 500;
+  background: #eff4fb; color: #4a7fe0;
+  border-radius: 999px; padding: 3px 9px;
+}
+.meta span.act { background: #eafaf2; color: #2f9e6b; }
+.meta span.typ { background: #fdf1e6; color: #d07a2e; }
+
+/* 다른 교과서의 시뮬레이션으로 연결하는 작은 칩 */
+.links { display: flex; flex-wrap: wrap; gap: 7px; margin: 2px 0 6px; }
+.links b { color: #ffffffd8; font-size: 12px; font-weight: 500; align-self: center; }
+.links a {
+  font-size: 12px; font-weight: 500; text-decoration: none;
+  color: #fff; background: #ffffff24; border: 1px solid #ffffff40;
+  border-radius: 999px; padding: 4px 12px;
+  transition: background .15s;
+}
+.links a:hover { background: #ffffff40; }
+
+.art img {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  object-fit: cover; object-position: center 30%;
+  background: #f6f4ec; z-index: 1;
+}
+/* 카드 썸네일 — 이미지 로드 실패 시 CSS 아트가 보인다 */
+.a-tq { background: #16202e; }
+.a-tq::before { content: ''; position: absolute; left: 12%; top: 42px; width: 76%; height: 7px;
+  background: #d8b47a; border-radius: 2px; transform: rotate(-4deg); }
+.a-tq::after { content: ''; position: absolute; left: 50%; top: 48px; width: 0; height: 0;
+  transform: translateX(-50%); border-left: 13px solid transparent;
+  border-right: 13px solid transparent; border-bottom: 22px solid #8e9bad; }
+
+.a-mo { background: linear-gradient(#16202e 0 62%, #39424f 62% 68%, #16202e 68%); }
+.a-mo::before { content: ''; position: absolute; left: 22%; top: 34px; width: 34px; height: 22px;
+  background: #c8ccd2; border-radius: 3px; }
+.a-mo::after { content: ''; position: absolute; left: 45%; top: 42px; width: 34%; height: 6px;
+  background: #d0453a; border-radius: 3px; }
+
+.a-col { background: linear-gradient(#16202e 0 62%, #39424f 62% 70%, #16202e 70%); }
+.a-col::before, .a-col::after { content: ''; position: absolute; top: 32px; width: 36px; height: 24px; border-radius: 4px; }
+.a-col::before { left: 24%; background: #e8577a; }
+.a-col::after { right: 24%; background: #4a8fe0; }
+
+.a-en { background: linear-gradient(#16202e 0 74%, #6f9457 74%); }
+.a-en::before { content: ''; position: absolute; left: 50%; top: 12px; width: 14px; height: 14px;
+  border-radius: 50%; background: #d8402f; box-shadow: 0 20px 0 #d8402f80, 0 36px 0 #d8402f40; }
+
+.a-ht { background: #16202e; }
+.a-ht::before { content: ''; position: absolute; left: 50%; top: 20px; width: 44px; height: 56px;
+  transform: translateX(-50%); background: #f4f6f9; border-radius: 4px 4px 10px 10px; }
+.a-ht::after { content: ''; position: absolute; left: 50%; top: 52px; width: 40px; height: 22px;
+  transform: translateX(-50%); background: #c8a86a; border-radius: 0 0 9px 9px; }
+
+.a-eg { background: #16202e; }
+.a-eg::before { content: ''; position: absolute; left: 12%; top: 26px; width: 26%; height: 42px;
+  background: #c23a2a; border-radius: 4px; }
+.a-eg::after { content: ''; position: absolute; right: 12%; top: 26px; width: 26%; height: 42px;
+  background: #2f6ad0; border-radius: 4px; }
+
+.a-ci { background: #16202e; }
+.a-ci::before { content: ''; position: absolute; inset: 20px 30px; border: 3px solid #e8663f; border-radius: 3px; }
+.a-ci::after { content: ''; position: absolute; left: 50%; top: 17px; width: 30px; height: 13px;
+  transform: translateX(-50%); background: #e8a14a; border-radius: 2px; }
+
+.a-ef { background:
+  radial-gradient(circle at 30% 50%, #d0453a 0 9px, #d0453a55 9px 26px, transparent 30%),
+  radial-gradient(circle at 70% 50%, #2f6ad0 0 9px, #2f6ad055 9px 26px, transparent 30%), #16202e; }
+
+.a-cp { background: #16202e; }
+.a-cp::before { content: ''; position: absolute; left: 34%; top: 24px; width: 7px; height: 46px; background: #d0453a; }
+.a-cp::after { content: ''; position: absolute; left: 48%; top: 24px; width: 7px; height: 46px; background: #2f6ad0;
+  box-shadow: 34px -8px 0 -1px #ffe066, 34px -8px 14px 6px #ffe06655; }
+
+.a-mg { background: #16202e; }
+.a-mg::before { content: ''; position: absolute; left: 14%; top: 34px; width: 34px; height: 12px;
+  background: linear-gradient(90deg, #2f6ad0 50%, #d0453a 50%); border-radius: 2px; }
+.a-mg::after { content: ''; position: absolute; right: 16%; top: 26px; width: 46px; height: 30px;
+  background: repeating-linear-gradient(90deg, #ffb03a 0 3px, transparent 3px 9px); }
+
+.a-am { background: #16202e; }
+.a-am::before { content: ''; position: absolute; left: 50%; top: 46px; width: 62px; height: 62px;
+  transform: translate(-50%, -50%); border: 2px solid #8fd8ff88; border-radius: 50%;
+  box-shadow: 0 0 0 12px #8fd8ff33; }
+.a-am::after { content: ''; position: absolute; left: 50%; top: 8px; width: 5px; height: 76px;
+  transform: translateX(-50%); background: #c0742e; }
+
+.a-in { background: #16202e; }
+.a-in::before { content: ''; position: absolute; left: 26%; top: 32px; width: 44%; height: 28px;
+  border-radius: 5px; background: repeating-linear-gradient(90deg, #c07a2e 0 4px, #16202e 4px 9px); }
+.a-in::after { content: ''; position: absolute; right: 11%; top: 36px; width: 20px; height: 20px;
+  border-radius: 50%; background: #ffe066; box-shadow: 0 0 16px 5px #ffe06670; }
+
+.a-le { background: radial-gradient(ellipse 38% 72% at 50% 50%, #9fd6ee 0 42%, transparent 46%), #16202e; }
+.a-le::before { content: ''; position: absolute; left: 12%; top: 50%; width: 76%; height: 2px;
+  background: linear-gradient(90deg, #ffb03a, #ffb03a80); }
+.a-le::after { content: ''; position: absolute; right: 15%; top: 24px; width: 3px; height: 44px; background: #ffd84a; }
+
+.a-li { background:
+  repeating-linear-gradient(90deg, #38ff8f 0 5px, #0b1a12 5px 15px) right / 32% 100% no-repeat,
+  linear-gradient(90deg, #16202e 0 64%, #0b1a12 64%); }
+.a-li::before { content: ''; position: absolute; left: 26%; top: 14%; width: 6px; height: 72%;
+  background: #05080d; box-shadow: 14px 0 0 #05080d; }
+
+.a-pe { background: #16202e; }
+.a-pe::before { content: ''; position: absolute; left: 16%; top: 42px; width: 34%; height: 5px;
+  background: linear-gradient(90deg, #7a5aff, #b08aff); }
+.a-pe::after { content: ''; position: absolute; left: 52%; top: 22px; width: 6px; height: 46px;
+  background: #d8c88a; box-shadow: 22px 4px 0 -1px #5ad0f0, 38px -6px 0 -1px #5ad0f0, 30px 14px 0 -1px #5ad0f0; }
+
+.a-sp { background: #05070b; }
+.a-sp::before { content: ''; position: absolute; left: 8%; top: 22px; width: 84%; height: 44px;
+  background:
+    linear-gradient(90deg, transparent 8%, #7a5aff 8.5%, transparent 9.5%),
+    linear-gradient(90deg, transparent 24%, #4a7fe0 24.5%, transparent 25.5%),
+    linear-gradient(90deg, transparent 42%, #4ad8a0 42.5%, transparent 43.5%),
+    linear-gradient(90deg, transparent 78%, #e8577a 79%, transparent 80%); }
+
+.a-sc { background: #16202e; }
+.a-sc::before { content: ''; position: absolute; left: 20%; top: 24px; width: 60%; height: 44px;
+  background:
+    radial-gradient(circle at 16% 30%, #8e9bad 0 9px, transparent 10px),
+    radial-gradient(circle at 50% 30%, #4ad8a0 0 9px, transparent 10px),
+    radial-gradient(circle at 84% 30%, #8e9bad 0 9px, transparent 10px),
+    radial-gradient(circle at 33% 78%, #8e9bad 0 9px, transparent 10px),
+    radial-gradient(circle at 67% 78%, #8e9bad 0 9px, transparent 10px); }
+
+.a-rl { background: linear-gradient(#16202e 0 74%, #2b3441 74% 82%, #16202e 82%); }
+.a-rl::before { content: ''; position: absolute; left: 36%; top: 18px; width: 30%; height: 48px;
+  background: #3d5f8a55; border: 1px solid #8fb8e055; border-radius: 3px; }
+.a-rl::after { content: ''; position: absolute; left: 30%; top: 22px; width: 42%; height: 40px;
+  background:
+    linear-gradient(56deg, transparent 46%, #ffb03a 46% 52%, transparent 52%),
+    linear-gradient(-56deg, transparent 46%, #ffb03a 46% 52%, transparent 52%); }
+
+/* ── 역학과 에너지 신규 카드 썸네일 ── */
+.a-pj { background: linear-gradient(#16202e 0 78%, #6f9457 78%); }
+.a-pj::before { content: ''; position: absolute; left: 10%; bottom: 18px; width: 80%; height: 52px;
+  border-top: 3px dashed #f0a53c; border-radius: 50% 50% 0 0 / 100% 100% 0 0; }
+.a-pj::after { content: ''; position: absolute; right: 14%; bottom: 20px; width: 13px; height: 13px;
+  border-radius: 50%; background: #f0a53c; box-shadow: -30px -22px 0 -2px #f0a53c99, -62px -32px 0 -3px #f0a53c66, -96px -34px 0 -4px #f0a53c44; }
+
+.a-cir { background: #16202e; }
+.a-cir::before { content: ''; position: absolute; left: 36%; top: 46px; width: 52px; height: 52px;
+  transform: translate(-50%, -50%); border: 2px dashed #8fd8ff66; border-radius: 50%; }
+.a-cir::after { content: ''; position: absolute; left: 52%; top: 20px; width: 12px; height: 12px;
+  border-radius: 50%; background: #d0453a; box-shadow: 34px 26px 0 2px #e8577a55, 52px 30px 0 0 #ffd84a; }
+
+.a-or { background: radial-gradient(circle at 40% 50%, #ffca4a 0 12px, #ffca4a44 12px 17px, transparent 18px), #0a0e1a; }
+.a-or::before { content: ''; position: absolute; left: 40%; top: 50%; width: 104px; height: 62px;
+  transform: translate(-42%, -50%); border: 2px solid #ffd84a77; border-radius: 50%; }
+.a-or::after { content: ''; position: absolute; left: 68%; top: 30px; width: 10px; height: 10px;
+  border-radius: 50%; background: #5a9df0; }
+
+.a-gr { background: #1a2233; }
+.a-gr::before { content: ''; position: absolute; left: 50%; top: 16px; width: 40px; height: 62px;
+  transform: translateX(-50%); background: #8a93a6; border-radius: 4px;
+  box-shadow: inset 0 -14px 0 #39424f; }
+.a-gr::after { content: ''; position: absolute; left: 50%; top: 26px; width: 14px; height: 22px;
+  transform: translateX(-50%); background: #5a9df0; border-radius: 7px 7px 4px 4px; }
+
+.a-ga { background: #16202e; }
+.a-ga::before { content: ''; position: absolute; left: 50%; top: 18px; width: 46px; height: 60px;
+  transform: translateX(-50%); border: 3px solid #bcd8f0aa; border-bottom: 0; border-radius: 4px 4px 0 0;
+  background: linear-gradient(#d0453a 0 10px, transparent 10px); }
+.a-ga::after { content: ''; position: absolute; left: 50%; top: 46px; width: 5px; height: 5px;
+  border-radius: 50%; background: #5a9df0;
+  box-shadow: -12px 8px 0 #5a9df0, 12px 4px 0 #8ab8f0, -6px 18px 0 #8ab8f0, 10px 20px 0 #5a9df0; }
+
+.a-et { background: #16202e; }
+.a-et::before { content: ''; position: absolute; left: 14%; top: 26px; width: 72%; height: 44px;
+  border: 3px solid #d8c9a8aa; border-radius: 4px;
+  background: linear-gradient(90deg, transparent 49%, #d8c9a8aa 49% 51%, transparent 51%); }
+.a-et::after { content: ''; position: absolute; left: 22%; top: 40px; width: 8px; height: 8px;
+  border-radius: 50%; background: #f0a53c;
+  box-shadow: 14px 10px 0 #d0453a, 28px -4px 0 #f0a53c, 52px 6px 0 #d0453a, 66px 14px 0 #f0a53c, 78px -2px 0 #d0453a; }
+
+.a-sw { background: #16202e; }
+.a-sw::before { content: ''; position: absolute; left: 8%; top: 44px; width: 84%; height: 3px;
+  background:
+    repeating-linear-gradient(90deg, transparent 0 2px, #5a9df0 2px 4px);
+  clip-path: polygon(0 0, 100% 0, 100% 100%, 0 100%); }
+.a-sw::after { content: ''; position: absolute; left: 8%; top: 20px; width: 84%; height: 50px;
+  background:
+    radial-gradient(circle at 10% 50%, #5ad0f0 0 4px, transparent 5px),
+    radial-gradient(circle at 30% 20%, #5ad0f0 0 4px, transparent 5px),
+    radial-gradient(circle at 50% 50%, #d0453a 0 5px, transparent 6px),
+    radial-gradient(circle at 70% 80%, #5ad0f0 0 4px, transparent 5px),
+    radial-gradient(circle at 90% 50%, #5ad0f0 0 4px, transparent 5px); }
+
+.a-dp { background: linear-gradient(#16202e 0 70%, #5a626e 70% 82%, #16202e 82%); }
+.a-dp::before { content: ''; position: absolute; right: 20%; top: 34px; width: 36px; height: 20px;
+  background: #f0f0f0; border-radius: 3px; box-shadow: inset 0 -6px 0 #d0453a; }
+.a-dp::after { content: ''; position: absolute; right: 30%; top: 24px; width: 90px; height: 44px;
+  background:
+    radial-gradient(circle at 100% 50%, transparent 0 8px, #f0a53c88 8px 10px, transparent 10px 16px, #f0a53c66 16px 18px, transparent 18px 26px, #f0a53c44 26px 28px, transparent 28px); }
+
+.a-st { background: #16202e; }
+.a-st::before { content: ''; position: absolute; left: 12%; top: 30px; width: 76%; height: 32px;
+  background:
+    radial-gradient(ellipse 50% 100% at 25% 50%, transparent 62%, #5ad0f0 63% 68%, transparent 69%),
+    radial-gradient(ellipse 50% 100% at 75% 50%, transparent 62%, #5ad0f0 63% 68%, transparent 69%); }
+.a-st::after { content: ''; position: absolute; left: 12%; top: 44px; width: 76%; height: 3px;
+  background: #8e9bad;
+  box-shadow: 0 0 0 0 transparent; }
+
+/* ── 전자기와 양자 신규 카드 썸네일 ── */
+.a-es { background: #16202e; }
+.a-es::before { content: ''; position: absolute; left: 26%; top: 40px; width: 26px; height: 26px;
+  border-radius: 50%; background: #c8ccd2; box-shadow: 34px 0 0 #c8ccd2; }
+.a-es::after { content: ''; position: absolute; left: 16%; top: 22px; width: 44px; height: 8px;
+  background: #f0a53c; border-radius: 4px; transform: rotate(-18deg); }
+
+.a-lo { background: #141a28; }
+.a-lo::before { content: ''; position: absolute; left: 50%; top: 46px; width: 58px; height: 58px;
+  transform: translate(-50%, -50%); border: 2.5px solid #ffd84a88; border-radius: 50%; }
+.a-lo::after { content: ''; position: absolute; left: 50%; top: 17px; width: 11px; height: 11px;
+  border-radius: 50%; background: #e8577a; box-shadow: 0 0 10px 2px #e8577a88; }
+
+.a-po { background: #1a2233; }
+.a-po::before { content: ''; position: absolute; left: 20%; top: 20px; width: 26px; height: 52px;
+  background: repeating-linear-gradient(0deg, #8ca0be 0 4px, #2b3441 4px 9px); border-radius: 4px; }
+.a-po::after { content: ''; position: absolute; right: 22%; top: 20px; width: 26px; height: 52px;
+  background: repeating-linear-gradient(90deg, #8ca0be 0 4px, #2b3441 4px 9px); border-radius: 4px; }
+
+.a-la { background: #141a28; }
+.a-la::before { content: ''; position: absolute; left: 10%; top: 42px; width: 58%; height: 8px;
+  background: #ff5a5a; box-shadow: 0 0 14px 3px #ff5a5a88; }
+.a-la::after { content: ''; position: absolute; right: 12%; top: 30px; width: 8px; height: 32px;
+  background: #c8d4e4; box-shadow: -66px 0 0 #c8d4e488; }
+
+.a-mw { background: linear-gradient(90deg, #16202e 0 62%, #05070c 62%); }
+.a-mw::before { content: ''; position: absolute; left: 30%; top: 16px; width: 7px; height: 68%;
+  background: #05080d; box-shadow: 13px 0 0 #05080d; }
+.a-mw::after { content: ''; position: absolute; right: 8%; top: 14px; width: 26%; height: 72%;
+  background: repeating-linear-gradient(0deg, #7ae0a0 0 4px, #0b1a12 4px 11px); }
+
+.a-tu { background: #141a28; }
+.a-tu::before { content: ''; position: absolute; left: 44%; top: 18px; width: 24px; height: 58px;
+  background: #7a849488; border: 2px solid #9fb0c266; }
+.a-tu::after { content: ''; position: absolute; left: 12%; top: 42px; width: 76%; height: 16px;
+  background:
+    radial-gradient(ellipse 26% 100% at 16% 50%, #7ae0a0 0 30%, transparent 60%),
+    radial-gradient(ellipse 16% 60% at 84% 50%, #7ae0a066 0 30%, transparent 60%); }
+
+.a-at { background: radial-gradient(circle at 50% 50%, #e8577a 0 7px, transparent 8px), #141a28; }
+.a-at::before { content: ''; position: absolute; left: 50%; top: 46px; width: 74px; height: 74px;
+  transform: translate(-50%, -50%);
+  background:
+    radial-gradient(circle at 30% 30%, #5ad0f0aa 0 3px, transparent 4px),
+    radial-gradient(circle at 68% 24%, #5ad0f088 0 3px, transparent 4px),
+    radial-gradient(circle at 76% 62%, #5ad0f0aa 0 3px, transparent 4px),
+    radial-gradient(circle at 24% 66%, #5ad0f088 0 3px, transparent 4px),
+    radial-gradient(circle at 50% 14%, #5ad0f066 0 3px, transparent 4px),
+    radial-gradient(circle at 14% 46%, #5ad0f066 0 3px, transparent 4px),
+    radial-gradient(circle at 86% 42%, #5ad0f066 0 3px, transparent 4px),
+    radial-gradient(circle at 56% 82%, #5ad0f088 0 3px, transparent 4px); }
+
+.a-sl { background: #05070b; }
+.a-sl::before { content: ''; position: absolute; left: 8%; top: 24px; width: 84%; height: 30px;
+  background: linear-gradient(90deg, #7a5aff, #4a7fe0, #4ad8a0, #ffd84a, #f0a53c, #e8577a); }
+.a-sl::after { content: ''; position: absolute; left: 8%; top: 24px; width: 84%; height: 30px;
+  background:
+    linear-gradient(90deg, transparent 18%, #05070b 18.7%, transparent 19.4%),
+    linear-gradient(90deg, transparent 39%, #05070b 39.7%, transparent 40.4%),
+    linear-gradient(90deg, transparent 64%, #05070b 64.7%, transparent 65.4%),
+    linear-gradient(90deg, transparent 83%, #05070b 83.7%, transparent 84.4%); }
+
+footer { margin-top: 30px; color: #ffffffcf; font-size: 12.5px; line-height: 1.85; }
+footer b { color: #fff; }
+</style>
+</head>
+<body>
+
+<header>
+  <span class="badge">비상교육 고등 『전자기와 양자』</span>
+  <h1>『전자기와 양자』 시뮬레이션</h1>
+  <p>교과서의 <b>핵심 탐구</b>와 <b>해 보기</b> 활동을 그대로 실행해 볼 수 있는 3D 시뮬레이션입니다.<br>
+     준비물을 배치하고 조건을 바꿔 가며 결과를 표에 기록해 보세요.</p>
+</header>
+<p class="count" style="margin-bottom:18px">
+  <a href="index.html" style="color:#fff;text-decoration:none;background:#ffffff24;border:1px solid #ffffff40;border-radius:999px;padding:5px 14px;margin-right:8px">🏠 교과서 선택</a>
+  <a href="hub-phy.html" style="color:#ffffffd8;text-decoration:none;background:#ffffff18;border:1px solid #ffffff30;border-radius:999px;padding:5px 14px;margin-right:8px">물리학 →</a><a href="hub-mech.html" style="color:#ffffffd8;text-decoration:none;background:#ffffff18;border:1px solid #ffffff30;border-radius:999px;padding:5px 14px;margin-right:8px">역학과 에너지 →</a>
+</p>
+<p class="count">신규 8종 + 물리학 시뮬 11종 연결</p>
+
+<!-- ═════════ 전자기와 양자 ═════════ -->
+<div class="book">
+  <h2>『전자기와 양자』</h2>
+  <p>새 시뮬레이션 8종 + 물리학의 시뮬레이션 11종을 함께 사용합니다</p>
+</div>
+
+<section class="unit">
+  <h2>I. 전자기적 상호작용</h2>
+  <div class="grid">
+    <a class="card" href="electrostatic/index.html">
+      <div class="art a-es"><img src="assets/thumbs/electrostatic.jpg" alt="" onerror="this.remove()"></div>
+      <h3>정전기 유도와 유전 분극</h3>
+      <p>대전된 빨대로 도체 공 두 개를 반대로 대전시키고,
+         물줄기가 풍선 쪽으로 휘는 까닭을 알아봅니다.</p>
+      <div class="meta"><span>1-02</span><span>16~19쪽</span><span class="typ">③ 체험</span></div>
+    </a>
+
+    <a class="card" href="lorentz/index.html">
+      <div class="art a-lo"><img src="assets/thumbs/lorentz.jpg" alt="" onerror="this.remove()"></div>
+      <h3>로런츠 힘 — 하전 입자 놀이터</h3>
+      <p>자기장에 입자를 쏘아 원·나선을 그리고 사이클로트론으로
+         가속합니다. 속력을 2배로 해도 주기는 그대로!</p>
+      <div class="meta"><span>1-04</span><span>24~27쪽</span><span class="typ">⑤ 샌드박스</span></div>
+    </a>
+  </div>
+  <div class="links" style="margin-top:12px">
+    <b>함께 보기 (물리학):</b>
+    <a href="efield/index.html">전기장 (1-01)</a>
+    <a href="ampere/index.html">전류의 자기장 (1-03)</a>
+    <a href="induction/index.html">전자기 유도 (1-05)</a>
+    <a href="circuit/index.html">저항 (1-06)</a>
+    <a href="capacitor/index.html">축전기 (1-06)</a>
+    <a href="semiconductor/index.html">반도체 (1-07)</a>
+  </div>
+</section>
+
+<section class="unit">
+  <h2>II. 빛과 정보 통신</h2>
+  <div class="grid">
+    <a class="card" href="polarization/index.html">
+      <div class="art a-po"><img src="assets/thumbs/polarization.jpg" alt="" onerror="this.remove()"></div>
+      <h3>편광 — 말뤼스 법칙과 LCD</h3>
+      <p>편광판 두 개를 돌려 cos² 곡선을 얻고, 조도 센서로
+         LCD(선형)와 OLED(원형)를 구별합니다.</p>
+      <div class="meta"><span>2-03</span><span>66~71쪽</span><span class="typ">③ 체험</span></div>
+    </a>
+
+    <a class="card" href="laser/index.html">
+      <div class="art a-la"><img src="assets/thumbs/laser.jpg" alt="" onerror="this.remove()"></div>
+      <h3>레이저 — 빛을 기르는 공장</h3>
+      <p>유도 방출 → 밀도 반전 → 공진기 발진의 3막 이야기.
+         준안정 상태가 없으면 왜 실패하는지도 봅니다.</p>
+      <div class="meta"><span>2-05</span><span>76~79쪽</span><span class="typ">② 이야기</span></div>
+    </a>
+  </div>
+  <div class="links" style="margin-top:12px">
+    <b>함께 보기 (물리학):</b>
+    <a href="sim/index.html">간섭과 회절 (2-01)</a>
+    <a href="lens/index.html">광학 기기 (2-02)</a>
+    <a href="photoelectric/index.html">광전 효과 (2-04)</a>
+  </div>
+</section>
+
+<section class="unit">
+  <h2>III. 양자와 미시 세계</h2>
+  <div class="grid">
+    <a class="card" href="matterwave/index.html">
+      <div class="art a-mw"><img src="assets/thumbs/matterwave.jpg" alt="" onerror="this.remove()"></div>
+      <h3>전자를 한 개씩 — 이중 슬릿</h3>
+      <p>점이 쌓여 간섭무늬가 되는 기묘한 실험.
+         관측 장치를 켜면 무늬가 사라집니다!</p>
+      <div class="meta"><span>3-01</span><span>92~97쪽</span><span class="typ">⑥ 데이터</span></div>
+    </a>
+
+    <a class="card" href="tunnel/index.html">
+      <div class="art a-tu"><img src="assets/thumbs/tunnel.jpg" alt="" onerror="this.remove()"></div>
+      <h3>벽을 통과하는 전자 — 터널 효과</h3>
+      <p>고전 물리로는 100% 반사인 장벽을 확률적으로 통과합니다.
+         STM 으로 원자를 '보는' 원리까지.</p>
+      <div class="meta"><span>3-03</span><span>102~105쪽</span><span class="typ">① 시공간</span></div>
+    </a>
+
+    <a class="card" href="atom/index.html">
+      <div class="art a-at"><img src="assets/thumbs/atom.jpg" alt="" onerror="this.remove()"></div>
+      <h3>전자구름 속으로 — 원자 모형</h3>
+      <p>측정할수록 흐려지는 불확정성을 체험하고, 관측 700번으로
+         전자구름을 직접 그려 보어 반지름과 비교합니다.</p>
+      <div class="meta"><span>3-04</span><span>106~109쪽</span><span class="typ">① 시공간</span></div>
+    </a>
+
+    <a class="card" href="starlight/index.html">
+      <div class="art a-sl"><img src="assets/thumbs/starlight.jpg" alt="" onerror="this.remove()"></div>
+      <h3>별빛 수사대 — 스펙트럼 분석</h3>
+      <p>흡수선과 원소의 방출선을 대조해 별 대기의 원소를
+         알아맞히세요. 태양 핵융합과 E=mc² 도 다룹니다.</p>
+      <div class="meta"><span>3-05</span><span>110~115쪽</span><span class="typ">④ 문제해결</span></div>
+    </a>
+  </div>
+  <div class="links" style="margin-top:12px">
+    <b>함께 보기 (물리학):</b>
+    <a href="spectrum/index.html">에너지 준위와 선 스펙트럼 (113쪽 탐구)</a>
+    <a href="relativity/index.html">특수 상대성 이론</a>
+  </div>
+</section>
+
+
+
+<footer>
+  각 시뮬레이션의 값과 무늬는 미리 만들어 둔 그림이 아니라 <b>매번 실제로 계산</b>합니다.<br>
+  오른쪽 사이드바에서 도움말 · 학습목표 · 사전학습 · 실험실 안전 · 핵심정리 · 퀴즈를,
+  실험 화면 왼쪽 아래에서 <b>탐구 수행 단계</b>를 볼 수 있습니다.
+</footer>
+
+</body>
+</html>

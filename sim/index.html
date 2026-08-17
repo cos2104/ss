@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>빛의 중첩과 간섭 | 물리학 III-1-01</title>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<!-- ══ 실험 메뉴 ═══════════════════════════════════════ -->
+<section class="menu-screen" id="menuScreen">
+  <a class="menu-back" href="../index.html">← 시뮬레이션 목록</a>
+  <div class="menu-head">
+    <img src="assets/icons/header-icon.png" alt="">
+    <div>
+      <p class="menu-unit">비상교육 고등 물리학 · III. 빛과 물질 &gt; 1. 빛의 이해</p>
+      <h1>빛의 중첩과 간섭</h1>
+      <p class="menu-sub">빛의 중첩과 간섭을 통해 빛의 파동성을 알고, 이를 이용한 기술과 현상을 설명할 수 있다.</p>
+    </div>
+  </div>
+
+  <div class="menu-cards">
+    <button class="menu-card" data-exp="sound">
+      <h2>파동의 보강, 상쇄<br>간섭 실험</h2>
+      <div class="card-art art-sound"></div>
+      <p>두 스피커에서 나온 소리를 소음측정기로 재어<br>보강 간섭과 상쇄 간섭을 직접 확인합니다.</p>
+      <span class="card-go">실험 시작 →</span>
+    </button>
+
+    <button class="menu-card" data-exp="double">
+      <h2>이중 슬릿 실험<br>관찰하기</h2>
+      <div class="card-art art-double"></div>
+      <p>이중 슬릿에 레이저를 비추어 간섭무늬를 만들고<br>무늬 사이의 간격을 재어 봅니다.</p>
+      <span class="card-go">실험 시작 →</span>
+    </button>
+
+    <button class="menu-card" data-exp="single">
+      <h2>단일 슬릿 실험<br>관찰하기</h2>
+      <div class="card-art art-single"></div>
+      <p>슬릿 하나만 통과한 빛이 퍼지는 회절 현상과<br>슬릿 폭의 관계를 알아봅니다.</p>
+      <span class="card-go">실험 시작 →</span>
+    </button>
+  </div>
+</section>
+
+
+<!-- ══ 실험 화면 ═══════════════════════════════════════ -->
+<section class="lab-screen hidden" id="labScreen">
+
+  <header class="topbar">
+    <img class="top-icon" src="assets/icons/header-icon.png" alt="">
+    <span class="top-unit">빛의 중첩과 간섭 · 교과서 124~129쪽</span>
+    <span class="top-title" id="expTitle"></span>
+  </header>
+
+  <nav class="tabs" id="tabs">
+    <button class="tab" data-exp="sound">파동의 보강, 상쇄 간섭 실험</button>
+    <button class="tab" data-exp="double">이중 슬릿 실험 관찰하기</button>
+    <button class="tab" data-exp="single">단일 슬릿 실험 관찰하기</button>
+  </nav>
+  <button class="tabs-toggle" id="tabsToggle" title="실험 목록 접기/펴기">
+    <img src="assets/icons/toggle.png" alt="">
+  </button>
+
+  <main class="stage" id="stage">
+    <canvas id="renderCanvas"></canvas>
+
+    <aside class="readout" id="readout"></aside>
+
+    <section class="graph-panel" id="graphPanel">
+      <div class="graph-head">
+        <span id="graphTitle">그래프</span>
+        <button class="mini-toggle" id="graphToggle">－</button>
+      </div>
+      <canvas id="graphCanvas" width="420" height="210"></canvas>
+      <div class="graph-foot" id="graphFoot"></div>
+    </section>
+
+    <!-- 탐구 수행 단계 안내 -->
+    <section class="steps-panel hidden" id="stepsPanel">
+      <div class="steps-head">
+        <span>탐구 수행 <small>(교과서 순서)</small></span>
+        <span class="btns">
+          <span id="stepNo">1 / 1</span>
+          <button id="stepPrev">이전</button>
+          <button id="stepNext" class="primary">다음 ▶</button>
+          <button id="stepToggle">－</button>
+        </span>
+      </div>
+      <div class="steps-body" id="stepsBody"></div>
+    </section>
+
+    <!-- 준비 단계에서 도구를 끌어다 놓는 동안 따라다니는 미리보기 -->
+    <div class="drag-ghost hidden" id="dragGhost"></div>
+    <div class="drop-hint hidden" id="dropHint"></div>
+  </main>
+
+  <aside class="sidebar" id="sidebar">
+    <button data-panel="help"><img src="assets/icons/edu_icon_1.png" alt=""></button>
+    <button data-panel="goal"><img src="assets/icons/edu_icon_2.png" alt=""></button>
+    <button data-panel="pre"><img src="assets/icons/edu_icon_3.png" alt=""></button>
+    <button data-panel="safety"><img src="assets/icons/edu_icon_4.png" alt=""></button>
+    <button data-panel="summary"><img src="assets/icons/edu_icon_5.png" alt=""></button>
+    <button data-panel="quiz"><img src="assets/icons/edu_icon_6.png" alt=""></button>
+    <button data-action="restart"><img src="assets/icons/edu_icon_7.png" alt=""></button>
+    <button data-action="menu"><img src="assets/icons/edu_icon_8.png" alt=""></button>
+  </aside>
+
+  <footer class="controls">
+    <p class="guide" id="guide"></p>
+
+    <!-- 준비 단계: 실험도구 트레이 -->
+    <div class="tool-tray hidden" id="toolTray">
+      <div class="tray-label">실<br>험<br>도<br>구</div>
+      <div class="tray-items" id="trayItems"></div>
+      <button class="tray-auto" id="trayAuto">자동 배치</button>
+    </div>
+
+    <!-- 실험 단계: 조절 컨트롤 -->
+    <div class="control-set hidden" id="controlSet"></div>
+  </footer>
+</section>
+
+
+<!-- ══ 학습 패널 ═══════════════════════════════════════ -->
+<div class="modal hidden" id="panelModal">
+  <div class="modal-box">
+    <button class="modal-close" id="panelClose">✕</button>
+    <div id="panelBody"></div>
+  </div>
+</div>
+
+<script src="https://cdn.babylonjs.com/babylon.js"></script>
+<script src="js/physics.js"></script>
+<script src="js/lab-content.js"></script>
+<script src="js/scene-sound.js"></script>
+<script src="js/scene-doubleslit.js"></script>
+<script src="js/scene-singleslit.js"></script>
+<script src="js/main.js"></script>
+</body>
+</html>

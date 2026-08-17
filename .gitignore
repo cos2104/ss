@@ -1,0 +1,21 @@
+# 교과서 원본 PDF (1권당 180~220MB, GitHub 100MB 제한 초과 + 저작물 원본)
+*.pdf
+
+# 제작용 내부 자료 (기획서·스토리보드·검토의견·교과서 발췌본)
+시뮬레이션 제작 계획서/
+
+# 별도 저장소로 관리 중 (github.com/cos2104/cap)
+capservice-standalone/
+
+# 참고용으로만 두었던 외부 번들 (어떤 페이지에서도 참조하지 않음)
+main.505e7f8f.js
+main.9ecc2164.css
+빛의 성질 시뮬레이션 캡쳐/
+빛의 성질 시뮬레이션 캡쳐.jpeg
+
+# 검증용 스크린샷 출력 폴더
+shots/
+
+# Windows
+desktop.ini
+Thumbs.db

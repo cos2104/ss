@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>축전기 서비스 센터 — 축전기의 원리와 활용</title>
+<link rel="stylesheet" href="../common/lab.css">
+<style>
+/* ── 사이드바에 추가되는 학습 흐름 버튼 (이 시뮬레이션 전용) ── */
+.sidebar .sb-flow {
+  display: flex; flex-direction: column; align-items: center; gap: 3px;
+  position: relative; padding: 8px 0;
+}
+.sidebar .sb-flow svg { width: 28px; height: 28px; }
+.sidebar .sb-flow .sb-label {
+  font-size: 10.5px; font-weight: 700; color: #8a97a8; letter-spacing: -.3px;
+}
+.sb-done {
+  position: absolute; top: 4px; right: 12px;
+  width: 14px; height: 14px; line-height: 14px; border-radius: 50%;
+  background: #2f9e6b; color: #fff; font-size: 9px; text-align: center; font-weight: 800;
+}
+@media (max-width: 820px) {
+  .sidebar .sb-flow svg { width: 24px; height: 24px; }
+  .sidebar .sb-flow .sb-label { font-size: 9.5px; }
+  .sb-done { right: 3px; }
+}
+
+/* 학습 패널 안 교과서 그림 */
+.fx-figs { display: flex; gap: 10px; flex-wrap: wrap; margin: 10px 0; }
+.fx-fig {
+  margin: 0; flex: 1 1 45%; min-width: 150px; max-width: 320px;
+  border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: #fff;
+}
+.fx-fig img { width: 100%; display: block; }
+.fx-fig figcaption { font-size: 11.5px; color: #62718a; padding: 5px 9px; background: #f6f9fd; }
+
+/* 나의 탐구 현황 진행바 */
+.wl { display: flex; align-items: center; gap: 10px; margin: 8px 0; font-size: 13px; }
+.wl-t { width: 108px; flex: none; color: #41566f; font-weight: 600; }
+.wl-bar { flex: 1; height: 11px; background: #e8eef6; border-radius: 999px; overflow: hidden; }
+.wl-bar i { display: block; height: 100%; background: var(--grad); border-radius: 999px; transition: width .3s; }
+.wl-v { flex: none; min-width: 78px; text-align: right; color: #62718a; font-variant-numeric: tabular-nums; font-size: 12px; }
+@media (max-width: 820px) {
+  .wl-t { width: 88px; font-size: 12px; }
+  .fx-fig { min-width: 120px; }
+}
+</style>
+</head>
+<body>
+<script src="https://cdn.babylonjs.com/babylon.js"></script>
+<script src="../assets/thumbs-data.js"></script>
+<script src="../common/lab-icons.js"></script>
+<script src="../common/lab-shell.js"></script>
+<script src="js/content.js"></script>
+<script src="js/scene-circuit.js"></script>
+<script src="js/scene-struct.js"></script>
+<script src="js/scene-devices.js"></script>
+<script>
+  Lab.boot({
+    unit: '물리학 · Ⅱ. 전기와 자기 › 03. 축전기와 센서',
+    title: '축전기 서비스 센터 — 분해하고 조립하며 배우는 축전기',
+    experiments: [CircuitScene, StructScene, DeviceScene],
+    content: LabContent,
+  });
+</script>
+<script src="js/flow.js"></script>
+</body>
+</html>
