@@ -691,7 +691,41 @@ const OrbitScene = (() => {
       '—', '—', '—', '—', res]];
   }
 
+
+  /* ══ 탐구 미션 ═══════════════════════════════
+     0 타원 궤도 · 1 원 궤도 · 2 케플러 제3법칙 확인 · 3 대포 궤도 진입
+     4 탈출 속도 넘기기                                                    */
+  const mis = { ellipse: false, circle: false, orbitIn: false, escaped: false };
+  const recs = () => ((typeof Lab !== 'undefined' && Lab.getRecords) ? Lab.getRecords() : []);
+
+  function missionDone(i) {
+    if (state.mode === 'kepler' && state.running) {
+      const a = semiMajor(state.r0, state.v0);
+      if (a !== Infinity) {
+        if (Math.abs(state.v0 - 6.28) < 0.12) mis.circle = true;
+        else mis.ellipse = true;
+      }
+    }
+    if (state.mode === 'cannon' && sim) {
+      if (sim.orbits >= 1) mis.orbitIn = true;
+      if (sim.escaped) mis.escaped = true;
+    }
+    if (i === 0) return mis.ellipse;
+    if (i === 1) return mis.circle;
+    if (i === 2) {
+      // T²/a³ 값이 서로 비슷한 기록이 2줄 이상
+      const rs = recs().filter((r) => String(r[0]) === '케플러' && r[6] && r[6] !== '—');
+      if (rs.length < 2) return false;
+      const k = rs.map((r) => parseFloat(r[6]));
+      return Math.max.apply(null, k) - Math.min.apply(null, k) < 0.25;
+    }
+    if (i === 3) return mis.orbitIn;
+    if (i === 4) return mis.escaped;
+    return false;
+  }
+
   return {
+    missionDone,
     id: 'orbit',
     noPrep: true,   // 모의실험형 — 배치 없이 바로 시작
     title: '행성 궤도 샌드박스 — 케플러 법칙과 뉴턴의 대포',

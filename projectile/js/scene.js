@@ -619,7 +619,38 @@ const ProjectileScene = (() => {
     return rows;
   }
 
+
+  /* ══ 탐구 미션 ═══════════════════════════════
+     0 발사 · 1 45°가 가장 멀리 · 2 여각(30°·60°) 같은 거리 · 3 달 중력 비교
+     4 기록 남기기                                                          */
+  const mis = { fired: false, range: {}, moon: false };
+  const recs = () => ((typeof Lab !== 'undefined' && Lab.getRecords) ? Lab.getRecords() : []);
+
+  function missionDone(i) {
+    if (sim && sim.samples && sim.samples.length > 4) {
+      mis.fired = true;
+      const R = sim.samples[sim.samples.length - 1].x;
+      if (state.g > 5) mis.range[state.angle] = Math.max(mis.range[state.angle] || 0, R);
+      else mis.moon = true;
+    }
+    if (i === 0) return mis.fired;
+    if (i === 1) {
+      // 45° 가 다른 각보다 멀리 날아간 것을 직접 확인
+      const keys = Object.keys(mis.range).map(Number);
+      if (!mis.range[45] || keys.length < 3) return false;
+      return keys.every((a) => a === 45 || mis.range[a] <= mis.range[45] + 0.01);
+    }
+    if (i === 2) {
+      const a = mis.range[30], b = mis.range[60];
+      return !!(a && b) && Math.abs(a - b) < 0.3;
+    }
+    if (i === 3) return mis.moon;
+    if (i === 4) return recs().length >= 5;
+    return false;
+  }
+
   return {
+    missionDone,
     id: 'projectile',
     title: '포물선 운동 분석 — 스트로보 촬영',
     guide, prepGuide, tools,

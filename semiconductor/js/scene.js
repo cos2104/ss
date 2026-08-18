@@ -554,7 +554,26 @@ const SemiScene = (() => {
     ];
   }
 
+
+  /* ══ 탐구 미션 ═══════════════════════════════
+     0 순수 반도체 관찰 · 1 n형 도핑 · 2 p형 도핑 · 3 온도 올려 전도도 비교
+     4 세 가지 모두 기록                                                   */
+  const mis = { seen: {}, hiT: false };
+  const recs = () => ((typeof Lab !== 'undefined' && Lab.getRecords) ? Lab.getRecords() : []);
+
+  function missionDone(i) {
+    mis.seen[state.doping] = true;
+    if (state.temp >= 400) mis.hiT = true;
+    if (i === 0) return state.doping === 'pure' && state.field;
+    if (i === 1) return !!mis.seen.n;
+    if (i === 2) return !!mis.seen.p;
+    if (i === 3) return mis.hiT;
+    if (i === 4) return new Set(recs().map((r) => String(r[0]))).size >= 3;
+    return false;
+  }
+
   return {
+    missionDone,
     id: 'semiconductor',
     noPrep: true,   // 모의실험형 — 배치 없이 바로 시작
     title: '반도체를 모형으로 나타내기',

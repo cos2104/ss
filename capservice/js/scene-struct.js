@@ -4,7 +4,7 @@
  * 분해 모드 — 원통형 축전기를 단계별로 분해한다.
  *   0 겉모습 → 1 겉면 벗기기(반투명) → 2 속 꺼내기 → 3 펼치기
  *   말린 금속판 2장 + 절연체 종이가 풀려 나와, 부피는 작아도 면적이 크다는 것을 확인.
- * 조립 모드 — 판 간격 d 와 면적 A 를 바꾸며 «충전되는 전하의 양»(상대값)을 관찰.
+ * 조립 모드 — 판 간격 d 와 면적 A 를 바꾸며 충전되는 전하의 양(상대값)을 관찰.
  *   라운드 1: 전하 2배  ·  라운드 2: 전하 4배  ·  라운드 3: 원통형으로 말아 부피 줄이기
  *   (교육과정 지침에 따라 '전기 용량'이라는 용어·수식은 쓰지 않는다)
  */
@@ -16,8 +16,8 @@ const StructScene = (() => {
   let buildG, bPlateA, bPlateB, bFaceA, bFaceB, bTexA, bTexB, bArrows = [], dielec, rolledCyl;
   let batG;              // 조립 모드의 전원 회로 (전지·집게·도선)
   // 전하 유입·유출 경로 (buildG 로컬): 전지 → 집게. 판까지의 마지막 구간은 스폰 시점에 붙인다
-  const BW_A = [[-3.2, -0.95, -0.18], [-3.2, -0.3, -0.55], [-2.05, -0.3, -0.8]];   // + 쪽 (앞판)
-  const BW_B = [[-3.2, -0.95, 0.18], [-3.2, -0.3, 0.55], [-2.05, -0.3, 0.8]];      // − 쪽 (뒷판)
+  const BW_A = [[-4.5, -0.95, -0.18], [-4.5, -0.3, -0.55], [-2.05, -0.3, -0.8]];   // + 쪽 (앞판)
+  const BW_B = [[-4.5, -0.95, 0.18], [-4.5, -0.3, 0.55], [-2.05, -0.3, 0.8]];      // − 쪽 (뒷판)
   let placed = {};
 
   const state = {
@@ -125,11 +125,12 @@ const StructScene = (() => {
   let shellG;
   const HOME_X = -1.5;           // 조립 상태의 축전기 위치
   const ROLL_R = 0.725;          // 롤 반지름
+  const LIFT = 0.75;             // 다리 높이 — 캔이 다리 위에 서 있다
 
   function buildPeel() {
     peelG = new (B().TransformNode)('stPeel', scene);
 
-    // 겉 껍질(캔) + 다리 — 하나의 그룹으로 묶어 «옆으로 옮길» 수 있게 한다
+    // 겉 껍질(캔) + 다리 — 하나의 그룹으로 묶어 옆으로 옮길 수 있게 한다
     shellG = new (B().TransformNode)('stShell', scene);
     shellG.parent = peelG;
     casing = B().MeshBuilder.CreateCylinder('stCase', { height: 2.6, diameter: 1.7 }, scene);
@@ -155,20 +156,21 @@ const StructScene = (() => {
     casingMat.specularPower = 96;
     casing.material = casingMat;
     casing.parent = shellG;
-    [[0.3, 0.9], [-0.3, 0.6]].forEach(([dx, h], i) => {
+    // 다리(리드선) 2개 — 긴 다리는 바닥까지 닿고, 짧은 다리는 살짝 떠 있다
+    [[0.3, LIFT], [-0.3, LIFT - 0.16]].forEach(([dx, h], i) => {
       const leg = B().MeshBuilder.CreateCylinder('stLeg' + i, { height: h, diameter: 0.07 }, scene);
       leg.position.set(dx, -h / 2 + 0.02, 0);
       leg.material = mat('stLegM' + i, '#8a93a6', '#dfe4ee', 96);
       leg.parent = shellG;
     });
-    shellG.position.set(HOME_X, 0, 0);
+    shellG.position.set(HOME_X, LIFT, 0);
     const shellLbl = label('stShellL', '겉 껍질 (금속 캔)', 2.4, 0.5, 28, '#5a4632');
     shellLbl.position.set(0, 3.1, 0);
     shellLbl.parent = shellG;
     shellLbl.setEnabled(false);
     shellG._lbl = shellLbl;
 
-    // 속 롤 — 위·아랫면에만 나선 단면, 옆면은 민무늬 포일. 꺼내면서 «눕혀서» 축을 바닥과 나란히 한다
+    // 속 롤 — 위·아랫면에만 나선 단면, 옆면은 민무늬 포일. 꺼내면서 눕혀서 축을 바닥과 나란히 한다
     rollG = new (B().TransformNode)('stRoll', scene);
     // 텍스처 좌반부 = 나선(뚜껑면), 우반부 = 민무늬(옆면) — faceUV 로 나눠 입힌다
     const rt = new (B().DynamicTexture)('stRollT', { width: 512, height: 256 }, scene, true);
@@ -198,10 +200,10 @@ const StructScene = (() => {
     rm.specularColor = new (B().Color3)(0.1, 0.1, 0.1);
     roll.material = rm;
     roll.parent = rollG;
-    rollG.position.set(HOME_X, 1.15, 0);
+    rollG.position.set(HOME_X, 1.15 + LIFT, 0);
     rollMeshes = [roll];
 
-    // 펼친 띠 — 롤을 눕힌 «축(z 방향)과 나란한 폭»으로, x 방향으로 풀려 나간다
+    // 펼친 띠 — 롤을 눕힌 축(z 방향)과 나란한 폭으로, x 방향으로 풀려 나간다
     stripG = new (B().TransformNode)('stStrip', scene);
     const layers = [
       ['금속판 ②', '#b8c4d4', 0],
@@ -227,7 +229,7 @@ const StructScene = (() => {
     l1.parent = stripG;
     stripLbl = l1;
     const l2 = label('stCaseL', '원통형 축전기 (지름 1.6 cm) — 클릭해서 분해해 보세요!', 5.6, 0.55, 30);
-    l2.position.set(HOME_X, 3.6, 0);
+    l2.position.set(HOME_X, 3.6 + LIFT, 0);
     l2.parent = peelG;
     peelG._titleLbl = l2;
   }
@@ -243,9 +245,13 @@ const StructScene = (() => {
     const un = clamp01(p - 2);        // 펼치기
     const sep = clamp01(p - 3);       // 층 분리
 
-    // 1. 겉 껍질 — 왼쪽으로 옮겨 놓는다 (빈 껍질)
-    shellG.position.x = HOME_X - k1 * 2.9;
-    shellG.rotation.z = k1 * 0.06;
+    // 1. 겉 껍질 — 롤을 관통하지 않도록 위로 들어 올렸다가 옆으로 옮겨 내려놓는다
+    const rise = clamp01(k1 / 0.35);
+    const move = clamp01((k1 - 0.35) / 0.4);
+    const down = clamp01((k1 - 0.75) / 0.25);
+    shellG.position.x = HOME_X - move * 2.9;
+    shellG.position.y = LIFT + (rise - down) * 2.9;
+    shellG.rotation.z = move * 0.06;
     shellG._lbl.setEnabled(k1 > 0.9);
     peelG._titleLbl.setEnabled(p < 0.15);
 
@@ -253,15 +259,16 @@ const StructScene = (() => {
     rollG.rotation.x = k2 * Math.PI / 2;
     const rollScale = 1 - un * 0.62;
     rollMeshes[0].scaling.x = rollMeshes[0].scaling.z = rollScale;
-    const rollY = 1.15 + k2 * (ROLL_R * rollScale - 1.15) + (k2 > 0 ? Math.sin(k2 * Math.PI) * 0.7 : 0);
+    const baseY = 1.15 + LIFT;
+    const rollY = baseY + k2 * (ROLL_R * rollScale - baseY) + (k2 > 0 ? Math.sin(k2 * Math.PI) * 0.7 : 0);
     // 3. 펼치기 — 띠는 x 방향으로 자라고, 롤은 풀리며 오른쪽으로 굴러간다 (바닥판 안에서)
     const L = un * 5.4;
     const x0 = -0.9;                  // 띠 시작점
     rollG.position.x = HOME_X + k2 * ((x0 + L + ROLL_R * rollScale) - HOME_X);
     rollG.position.y = rollY;
-    // 굴러가는 회전 — 원통 «자신의 축» 둘레로 돌아야 한다.
+    // 굴러가는 회전 — 원통 자신의 축 둘레로 돌아야 한다.
     // 부모의 rotation.y 는 월드 y 축(프로펠러)이 되므로, 눕히기(rotation.x)는 부모가,
-    // 축 둘레 회전은 «자식 메시의 로컬 y»(원통 축)가 맡는다.
+    // 축 둘레 회전은 자식 메시의 로컬 y(원통 축)가 맡는다.
     rollG.rotation.y = 0;
     rollG.rotation.z = 0;
     rollMeshes[0].rotation.y = -un * Math.PI * 4;
@@ -290,7 +297,7 @@ const StructScene = (() => {
     }
   }
 
-  /** 컨트롤의 «다음 단계» 버튼 표시를 현재 단계와 맞춘다 */
+  /** 컨트롤의 다음 단계 버튼 표시를 현재 단계와 맞춘다 */
   const STAGE_NAMES = ['① 겉모습', '② 껍질 벗기기', '③ 꺼내어 눕히기', '④ 펼치기', '⑤ 층 분리'];
   function syncStageButtons() {
     const now = document.getElementById('stageNow');
@@ -305,7 +312,7 @@ const StructScene = (() => {
   function buildBuild() {
     buildG = new (B().TransformNode)('stBuild', scene);
     const mk = (name) => {
-      const p = B().MeshBuilder.CreateBox('stBP' + name, { width: 3.2, height: 3.2, depth: 0.14 }, scene);
+      const p = B().MeshBuilder.CreateBox('stBP' + name, { width: 3.2, height: 3.2, depth: 0.08 }, scene);
       p.material = mat('stBPM' + name, '#aab6c8', '#e8f0fa', 96);
       p.parent = buildG;
       const face = B().MeshBuilder.CreatePlane('stBF' + name, { width: 3.0, height: 3.0 }, scene);
@@ -328,7 +335,7 @@ const StructScene = (() => {
     dm.alpha = 0.55;
     dielec.material = dm;
     dielec.parent = buildG;
-    // 판 사이 전기장 «전기력선» 화살표 (축 + 화살촉, + 판 → − 판)
+    // 판 사이 전기장 전기력선 화살표 (축 + 화살촉, + 판 → − 판)
     for (let i = 0; i < 9; i++) {
       const g2 = new (B().TransformNode)('stBAr' + i, scene);
       const mkm = (nm) => {
@@ -352,53 +359,42 @@ const StructScene = (() => {
       g2._mats = [sm2, tm2];
       bArrows.push(g2);
     }
-    // 전원 회로 — 전하는 공기에서 오는 게 아니라 «연결된 회로»를 타고 드나든다
+    // 전원 회로 — 전하는 공기에서 오는 게 아니라 연결된 회로를 타고 드나든다
     batG = new (B().TransformNode)('stBat', scene);
     batG.parent = buildG;
     const bat = B().MeshBuilder.CreateBox('stBatBox', { width: 0.75, height: 0.95, depth: 0.6 }, scene);
-    bat.position.set(-3.2, -1.5, 0);
+    bat.position.set(-4.5, -1.5, 0);
     bat.material = mat('stBatBoxM', '#2a3542', '#8898ac', 96);
     bat.parent = batG;
     const bl = label('stBatL', '전원 (9 V)', 1.6, 0.4, 26, '#3c4756');
-    bl.position.set(-3.2, -0.55, 0);
+    bl.position.set(-4.5, -0.55, 0);
     bl.parent = batG;
     const sp2 = label('stBatP', '+', 0.3, 0.3, 30, '#ff8a7a');
-    sp2.position.set(-3.38, -0.9, -0.2);
+    sp2.position.set(-4.68, -0.9, -0.2);
     sp2.parent = batG;
     const sn2 = label('stBatN', '−', 0.3, 0.3, 30, '#7ab0ff');
-    sn2.position.set(-3.02, -0.9, 0.2);
+    sn2.position.set(-4.32, -0.9, 0.2);
     sn2.parent = batG;
-    // 도선 + 판을 무는 집게
-    const bwire = (pts, hex, nm) => {
-      for (let i = 0; i < pts.length - 1; i++) {
-        const a = new (B().Vector3)(...pts[i]), b2 = new (B().Vector3)(...pts[i + 1]);
-        const d2 = b2.subtract(a);
-        const len = d2.length();
-        const w = B().MeshBuilder.CreateCylinder(nm + i, { height: len, diameter: 0.06 }, scene);
-        w.position = a.add(d2.scale(0.5));
-        const up = new (B().Vector3)(0, 1, 0);
-        const axis = d2.normalize();
-        const rotAxis = B().Vector3.Cross(up, axis);
-        const ang = Math.acos(Math.max(-1, Math.min(1, B().Vector3.Dot(up, axis))));
-        w.rotationQuaternion = rotAxis.length() < 1e-5
-          ? B().Quaternion.Identity()
-          : B().Quaternion.RotationAxis(rotAxis.normalize(), ang);
-        w.material = mat(nm + i + 'M', hex, '#f0a08a', 96);
-        w.isPickable = false;
-        w.parent = batG;
-      }
-    };
-    bwire(BW_A, '#c0392b', 'stBW_A');
-    bwire(BW_B, '#3c4756', 'stBW_B');
-    [[-2.05, -0.3, -0.8, '#c0392b', 'A'], [-2.05, -0.3, 0.8, '#3c4756', 'B']].forEach(([x, y, z, hex, nm]) => {
+    // 도선 + 판을 무는 집게 — 판의 크기·간격이 변해도 끝점이 판 가장자리를 따라간다
+    const mkSegs = (nm, hex, count) => Array.from({ length: count }, (_, i) => {
+      const w = B().MeshBuilder.CreateCylinder(nm + i, { height: 1, diameter: 0.06 }, scene);
+      w.material = mat(nm + i + 'M', hex, '#f0a08a', 96);
+      w.isPickable = false;
+      w.parent = batG;
+      return w;
+    });
+    batG._segsA = mkSegs('stBW_A', '#c0392b', BW_A.length - 1);
+    batG._segsB = mkSegs('stBW_B', '#3c4756', BW_B.length - 1);
+    [['A', '#c0392b'], ['B', '#3c4756']].forEach(([nm, hex]) => {
       const clamp = B().MeshBuilder.CreateCylinder('stClamp' + nm, { height: 0.34, diameter: 0.16 }, scene);
       clamp.rotation.x = Math.PI / 2;
-      clamp.position.set(x, y, z);
       clamp.material = mat('stClampM' + nm, hex, '#f0c0a0', 96);
       clamp.parent = batG;
+      batG['_clamp' + nm] = clamp;
     });
+    updateWires();
 
-    // 말린 결과 — 판이 있던 자리에서 «자라나며» 만들어진다
+    // 말린 결과 — 판이 있던 자리에서 자라나며 만들어진다
     rolledCyl = B().MeshBuilder.CreateCylinder('stRolled', { height: 2.4, diameter: 1.6 }, scene);
     rolledCyl.material = mat('stRolledM', '#20315e', '#8898ac', 96);
     rolledCyl.position.set(0, 0, 0);
@@ -409,11 +405,11 @@ const StructScene = (() => {
     buildG._rolledLbl = rl;
     // 전하량 게이지 — 넓은 틀 안에 채워지는 막대 (최대 800 눈금)
     const gBase = B().MeshBuilder.CreateBox('stQBase', { width: 1.6, height: 0.12, depth: 1.0 }, scene);
-    gBase.position.set(3.3, -1.85, 0);
+    gBase.position.set(4.35, -1.85, 0);
     gBase.material = mat('stQBaseM', '#39424f', '#6a7a88', 48);
     gBase.parent = buildG;
     const gFrame = B().MeshBuilder.CreateBox('stQFrame', { width: 1.3, height: 2.3, depth: 0.7 }, scene);
-    gFrame.position.set(3.3, -0.65, 0);
+    gFrame.position.set(4.35, -0.65, 0);
     const gfm = mat('stQFrameM', '#8a97a5', '#c8d4e0', 64);
     gfm.alpha = 0.18;
     gFrame.material = gfm;
@@ -443,6 +439,31 @@ const StructScene = (() => {
     buildG.position.set(-0.6, 1.9, 0.4);
   }
 
+  /** 도선 원기둥 하나를 두 점 사이에 맞춘다 (단위 높이 1 → scaling.y = 길이) */
+  function setSeg(w, pa, pb) {
+    const a = new (B().Vector3)(...pa), b2 = new (B().Vector3)(...pb);
+    const d2 = b2.subtract(a);
+    const len = Math.max(0.001, d2.length());
+    w.position = a.add(d2.scale(0.5));
+    w.scaling.y = len;
+    const up = new (B().Vector3)(0, 1, 0);
+    const axis = d2.normalize();
+    const rotAxis = B().Vector3.Cross(up, axis);
+    const ang = Math.acos(Math.max(-1, Math.min(1, B().Vector3.Dot(up, axis))));
+    w.rotationQuaternion = rotAxis.length() < 1e-5
+      ? B().Quaternion.Identity()
+      : B().Quaternion.RotationAxis(rotAxis.normalize(), ang);
+  }
+
+  /** BW_A/BW_B 경로대로 도선·집게 위치를 다시 맞춘다 (끝점은 layoutBuild 가 갱신) */
+  function updateWires() {
+    if (!batG || !batG._segsA) return;
+    batG._segsA.forEach((w, i) => setSeg(w, BW_A[i], BW_A[i + 1]));
+    batG._segsB.forEach((w, i) => setSeg(w, BW_B[i], BW_B[i + 1]));
+    batG._clampA.position.set(...BW_A[BW_A.length - 1]);
+    batG._clampB.position.set(...BW_B[BW_B.length - 1]);
+  }
+
   function drawQLabel() {
     const t = buildG._qLblTex;
     const c = t.getContext();
@@ -457,31 +478,34 @@ const StructScene = (() => {
     t.update();
   }
 
+  const WIDE = 1.55;   // 펼친 판의 가로:세로 비 — 정사각형이 아니라 옆으로 긴 띠 느낌
+
   function layoutBuild() {
-    const gapU = 0.3 + (state.gapMm / 8) * 1.5;
+    // 간격·판 두께를 줄여 말 때 원통이 판을 쓸고 지나가는 느낌을 던다
+    const gapU = 0.2 + (state.gapMm / 8) * 1.05;
     const sizeU = 0.5 + Math.sqrt(state.areaCm2 / 80) * 0.75;
     const rp = state.rollProg;                 // 0 펼침 ↔ 1 말림 (분해의 역재생처럼)
-    // 전하 기호 면은 판 «바깥쪽»에 — 안쪽이면 판에 가려 보이지 않는다
-    bPlateA.position.z = -gapU / 2; bFaceA.position.z = -gapU / 2 - 0.078;
-    bPlateB.position.z = gapU / 2;  bFaceB.position.z = gapU / 2 + 0.078;
-    // 말기: 오른쪽 끝은 고정, 왼쪽부터 «감겨 들어가며» 판의 폭이 줄어든다
+    // 전하 기호 면은 판 바깥쪽에 — 안쪽이면 판에 가려 보이지 않는다
+    bPlateA.position.z = -gapU / 2; bFaceA.position.z = -gapU / 2 - 0.055;
+    bPlateB.position.z = gapU / 2;  bFaceB.position.z = gapU / 2 + 0.055;
+    // 말기: 오른쪽 끝은 고정, 왼쪽부터 감겨 들어가며 판의 폭이 줄어든다
     const shrink = 1 - rp;
-    const halfBase = 1.6 * sizeU;              // 판 절반 폭 (월드)
+    const halfBase = 1.6 * sizeU * WIDE;       // 판 절반 폭 (월드)
     const shift = halfBase * rp;               // 오른쪽 가장자리 고정용 중심 이동
     [bPlateA, bFaceA, bPlateB, bFaceB].forEach((p) => {
-      p.scaling.x = Math.max(0.02, sizeU * shrink);
+      p.scaling.x = Math.max(0.02, sizeU * shrink * WIDE);
       p.scaling.y = sizeU;
       p.position.x = shift;
     });
-    dielec.scaling.x = Math.max(0.02, sizeU * 0.97 * shrink);
+    dielec.scaling.x = Math.max(0.02, sizeU * 0.97 * shrink * WIDE);
     dielec.scaling.y = sizeU * 0.97;
-    // 유전체는 극판 사이를 «꽉» 채운다 (기본 두께 0.05 → 간격에 맞게 확대)
-    dielec.scaling.z = Math.max(0.6, (gapU - 0.16) / 0.05);
+    // 유전체는 극판 사이를 꽉 채운다 (기본 두께 0.05 → 간격에 맞게 확대)
+    dielec.scaling.z = Math.max(0.6, (gapU - 0.1) / 0.05);
     dielec.position.z = 0;
     dielec.position.x = shift;
     const flatOn = rp < 0.98;
     [bPlateA, bFaceA, bPlateB, bFaceB, dielec].forEach((p) => p.setEnabled(flatOn));
-    // 말린 롤 — 감기는 왼쪽 끝에서 굴러가며 점점 굵어진다 (분해 «펼치기»의 역방향)
+    // 말린 롤 — 감기는 왼쪽 끝에서 굴러가며 점점 굵어진다 (분해 펼치기의 역방향)
     const rollR = 0.12 + 0.68 * rp;
     const leftEdge = halfBase * (2 * rp - 1);
     rolledCyl.setEnabled(rp > 0.02);
@@ -490,17 +514,22 @@ const StructScene = (() => {
     rolledCyl.rotation.y = -rp * 12;           // 자기 축 둘레로 감기는 회전
     buildG._rolledLbl.setEnabled(rp > 0.9);
     buildG._rolledLbl.position.set(rolledCyl.position.x, 2.4, 0);
+    // 판 크기·간격이 변해도 전원 도선·집게가 판의 왼쪽 가장자리를 따라온다
+    const edgeX = shift - halfBase * shrink;
+    BW_A[BW_A.length - 1] = [edgeX - 0.1, -0.3, -gapU / 2];
+    BW_B[BW_B.length - 1] = [edgeX - 0.1, -0.3, gapU / 2];
+    updateWires();
     // 전기력선 화살표 — 간격이 좁을수록 굵고 진하게
     const pull = 4 / state.gapMm;
     bArrows.forEach((a, i) => {
       const col = i % 3, row = Math.floor(i / 3);
-      a.position.set(shift + (-1 + col) * sizeU * shrink, (-1 + row) * sizeU, 0);
+      a.position.set(shift + (-1 + col) * sizeU * shrink * WIDE, (-1 + row) * sizeU, 0);
       a.scaling.set(0.6 + pull * 0.35, Math.max(0.4, (gapU - 0.1) / 0.95), 0.6 + pull * 0.35);
       a._mats.forEach((m2) => { m2.alpha = Math.min(1, 0.35 + pull * 0.3); });
       a.setEnabled(flatOn && rp < 0.5);
     });
     // 전하 기호 — 상대값에 비례 (최대 24개). 같은 부호 전하는 서로 밀어내므로
-    // 판 «전체에 고르게» 퍼져 거리를 유지하고, 수가 변하면 전체가 재배치된다.
+    // 판 전체에 고르게 퍼져 거리를 유지하고, 수가 변하면 전체가 재배치된다.
     const n = Math.max(2, Math.min(24, Math.round(chargeRel() / 400 * 24)));
     const draw = (tex, sign) => {
       const c = tex.getContext();
@@ -508,15 +537,14 @@ const StructScene = (() => {
       c.font = 'bold 32px sans-serif';
       c.textAlign = 'center'; c.textBaseline = 'middle';
       c.fillStyle = sign > 0 ? '#d0453a' : '#2f6ad0';
-      const cols = Math.max(1, Math.round(Math.sqrt(n)));
-      const rows = Math.ceil(n / cols);
-      let i = 0;
-      for (let r = 0; r < rows && i < n; r++) {
-        const inRow = Math.min(cols, n - r * cols);
-        for (let k = 0; k < inRow; k++, i++) {
-          c.fillText(sign > 0 ? '+' : '−', 250 * (k + 1) / (inRow + 1), 250 * (r + 1) / (rows + 1));
-        }
-      }
+      // 서로 밀어내는 배치 — 판이 가로로 늘어난 만큼 가로를 넓게 잡아 계산한다
+      LabUI.chargeLayout(Math.round(250 * WIDE), 250, n).forEach((p) => {
+        c.save();
+        c.translate(p.x / WIDE, p.y);
+        c.scale(1 / WIDE, 1);
+        c.fillText(sign > 0 ? '+' : '−', 0, 0);
+        c.restore();
+      });
       tex.update();
     };
     draw(bTexA, +1);
@@ -525,14 +553,14 @@ const StructScene = (() => {
     const q = chargeRel();
     const h = Math.max(0.08, Math.min(1, q / 800) * 2.2);
     buildG._qBar.scaling.y = h;
-    buildG._qBar.position.set(3.3, -1.79 + h / 2, 0);
+    buildG._qBar.position.set(4.35, -1.79 + h / 2, 0);
     buildG._qBar.material.emissiveColor = B().Color3.FromHexString(
       state.round === 4 ? '#5af0a0' : q >= 380 ? '#f0d03a' : '#f0a83a');
-    buildG._qLbl.position.set(3.3, 0.9, 0);
+    buildG._qLbl.position.set(4.35, 0.9, 0);
     drawQLabel();
     // 전원 회로는 말리는 동안 잠시 감춘다
     batG.setEnabled(flatOn && rp < 0.5);
-    // 전하량이 «늘면» 회로 도선을 따라 판으로 들어오고, «줄면» 도선을 따라 전원으로 되돌아간다
+    // 전하량이 늘면 회로 도선을 따라 판으로 들어오고, 줄면 도선을 따라 전원으로 되돌아간다
     const dq = q - lastQ;
     if (Math.abs(dq) > 5 && rp < 0.5) {
       const nIn = Math.min(8, Math.round(Math.abs(dq) / 25) + 2);
@@ -648,6 +676,15 @@ const StructScene = (() => {
 
   function update() { layout(); }
 
+  /** 탐구 수행 단계 자동 진행 조건 (content.steps.struct 과 1:1) */
+  function stepDone(i) {
+    if (i === 0) return state.mode === 'build' || state.stage >= 1;
+    if (i === 1) return state.mode === 'build' || state.stage >= 4;
+    if (i === 2) return state.mode === 'build' && state.round >= 2;
+    if (i === 3) return state.mode === 'build' && state.round >= 3;
+    return false;
+  }
+
   function resetCamera() {
     if (!camera) return;
     camera.alpha = -Math.PI / 2;
@@ -738,7 +775,7 @@ const StructScene = (() => {
 
   /* ══ 측정값 ═════════════════════════════════ */
   const STAGE_TEXT = [
-    '겉면의 표시를 읽어 보세요 — 1000 μF, 허용 전압 16 V, 그리고 − 극성 띠. 부품을 «클릭»하면 분해가 시작됩니다. 실물은 전해액 때문에 함부로 분해하면 위험합니다.',
+    '겉면의 표시를 읽어 보세요 — 1000 μF, 허용 전압 16 V, 그리고 − 극성 띠. 부품을 클릭하면 분해가 시작됩니다. 실물은 전해액 때문에 함부로 분해하면 위험합니다.',
     '겉 껍질(금속 캔)을 벗겨 옆에 두었습니다. 안에 무엇인가 돌돌 말려 있네요! 롤을 클릭해 꺼내 봅시다.',
     '롤을 꺼내어 눕혔습니다 — 원통의 축이 바닥과 나란해졌습니다. 이제 클릭해서 축과 나란한 폭으로 펼쳐 봅시다.',
     '롤이 굴러가며 띠가 풀렸습니다. 펼치니 1 m 가 넘습니다 — 부피는 작아도 면적은 크게! 한 번 더 클릭하면 층을 분리합니다.',
@@ -760,7 +797,7 @@ const StructScene = (() => {
       : state.round === 2
       ? '<b style="color:#2f9e6b">라운드 1 통과!</b> 라운드 2 — 이번엔 <b>4배</b>(380~420). 두 조건을 함께 조합해야 합니다.'
       : state.round === 3
-      ? '<b style="color:#2f9e6b">라운드 2 통과!</b> 라운드 3 — 면적을 최대(80 cm²)로 하고 «돌돌 말기»로 부피를 줄여 보세요.'
+      ? '<b style="color:#2f9e6b">라운드 2 통과!</b> 라운드 3 — 면적을 최대(80 cm²)로 하고 돌돌 말기로 부피를 줄여 보세요.'
       : '<b style="color:#2f9e6b">라운드 3 통과 — 수리 완료 배지 획득! 🏅</b> 실제 축전기가 바로 이 구조입니다: 넓은 판을 말아 작은 원통에 넣은 것.';
     return `
       <div class="row"><span>판 사이 간격 <i>d</i></span><b>${state.gapMm.toFixed(1)} mm</b></div>
@@ -835,7 +872,7 @@ const StructScene = (() => {
     guide, prepGuide, tools,
     create, update, tick, resetCamera,
     placeTool, resetTools, allPlaced, dropAt, slotName,
-    controlsHTML, bindControls, readoutHTML,
+    controlsHTML, bindControls, readoutHTML, stepDone,
     graphTitle, drawGraph, graphFootHTML,
     recordColumns, recordRow,
     state, chargeRel, volumeRel,

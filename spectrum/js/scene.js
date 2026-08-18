@@ -21,7 +21,7 @@ const SpectrumScene = (() => {
     voltage: 0.7,     // 방전 전압 (0~1)
     nHigh: 3,         // 전이 시작 준위
     nLow: 2,          // 전이 끝 준위
-    on: true,
+    on: false,        // 처음에는 방전관이 꺼져 있다
   };
 
   // 기체별 방출선 (nm)
@@ -641,7 +641,28 @@ const SpectrumScene = (() => {
     ];
   }
 
+
+  /* ══ 탐구 미션 ═══════════════════════════════
+     0 발머 계열 가시광선 관찰 · 1 라이먼(자외선) 확인 · 2 파셴(적외선) 확인
+     3 다른 기체와 비교 · 4 기록 4줄                                        */
+  const mis = { series: {}, gases: {} };
+  const recs = () => ((typeof Lab !== 'undefined' && Lab.getRecords) ? Lab.getRecords() : []);
+
+  function missionDone(i) {
+    if (state.on) {
+      mis.gases[state.gas] = true;
+      if (state.gas === 'H') mis.series[state.nLow] = true;
+    }
+    if (i === 0) return !!mis.series[2];
+    if (i === 1) return !!mis.series[1];
+    if (i === 2) return !!mis.series[3];
+    if (i === 3) return Object.keys(mis.gases).length >= 2;
+    if (i === 4) return recs().length >= 4;
+    return false;
+  }
+
   return {
+    missionDone,
     id: 'spectrum',
     noPrep: true,   // 모의실험형 — 배치 없이 바로 시작
     title: '수소의 선 스펙트럼 관찰하기',

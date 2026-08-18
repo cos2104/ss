@@ -28,7 +28,10 @@ const Lab = (() => {
   let phase = 'prep';
   let gctx, GW, GH;
   let records = [];
+  let missionOK = {};        // 실험별 탐구 미션 달성 여부 (탭을 옮겨도 남는다)
   let stepIdx = 0;
+  let stepHold = false;      // [이전]으로 되돌아가 보는 동안에는 자동 진행을 멈춘다
+  let stepPollT = 0;
 
   /* ══ 화면 뼈대 ═══════════════════════════════ */
   function markup(c) {
@@ -78,7 +81,7 @@ const Lab = (() => {
 
         <section class="steps-panel hidden" id="stepsPanel">
           <div class="steps-head">
-            <span>탐구 수행 <small>(교과서 순서)</small></span>
+            <span id="stepsTitle">탐구 수행</span>
             <span class="btns">
               <span id="stepNo">1 / 1</span>
               <button id="stepPrev">이전</button>
@@ -152,6 +155,14 @@ const Lab = (() => {
         const dt = Math.min(engine.getDeltaTime() / 1000, 0.05);
         if (current.tick(dt)) refreshLive();
       }
+      // 탐구 미션 자동 판정 · 단계 자동 진행 (0.5초 간격 확인)
+      if (phase === 'run') {
+        stepPollT += engine.getDeltaTime();
+        if (stepPollT > 500) {
+          stepPollT = 0;
+          pollMissions();
+        }
+      }
       current.scene.render();
     });
     window.addEventListener('resize', () => engine.resize());
@@ -170,6 +181,7 @@ const Lab = (() => {
     renderRecords();
     $('#recordPanel').classList.toggle('hidden', !current.recordColumns);
     stepIdx = 0;
+    stepHold = false;
 
     current.resetTools();
     current.resetCamera();
@@ -183,9 +195,58 @@ const Lab = (() => {
     engine.resize();
   }
 
-  /* ══ 탐구 수행 단계 안내 ═════════════════════ */
-  function expSteps() {
-    return (cfg.content.steps && cfg.content.steps[current.id]) || null;
+  /* ══ 탐구 미션 ═══════════════════════════════
+     content.steps[expId] 의 항목은 글자열이거나 { t, goal } 이다.
+     실험 모듈이 missionDone(i) 를 두면 «달성»을 스스로 판정하고,
+     stepDone(i) 만 있으면 예전처럼 다음 단계로 넘어가기만 한다.      */
+  function expSteps(exp) {
+    const e = exp || current;
+    const raw = (cfg.content.steps && e && cfg.content.steps[e.id]) || null;
+    if (!raw) return null;
+    return raw.map((s) => (typeof s === 'string' ? { t: s, goal: '' } : s));
+  }
+
+  /** 이 실험이 «미션형»인가 (모듈이 판정 함수를 가졌는가) */
+  const isMission = (e) => !!(e || current) && typeof (e || current).missionDone === 'function';
+
+  function okList(exp) {
+    const e = exp || current;
+    if (!e) return [];
+    const n = (expSteps(e) || []).length;
+    if (!missionOK[e.id] || missionOK[e.id].length !== n) missionOK[e.id] = new Array(n).fill(false);
+    return missionOK[e.id];
+  }
+
+  /** 매 0.5초 — 아직 못 이룬 미션을 다시 확인한다 (한 번 달성하면 유지) */
+  function pollMissions() {
+    const steps = expSteps();
+    if (!steps) return;
+    if (isMission()) {
+      const ok = okList();
+      let changed = false, justDone = -1;
+      for (let i = 0; i < steps.length; i++) {
+        if (ok[i]) continue;
+        let r = false;
+        try { r = !!current.missionDone(i); } catch (_) { r = false; }
+        if (r) { ok[i] = true; changed = true; justDone = i; }
+      }
+      if (changed) {
+        const done = ok.filter(Boolean).length;
+        if (!stepHold) {
+          const nx = ok.findIndex((v) => !v);
+          stepIdx = nx < 0 ? steps.length - 1 : nx;
+        }
+        renderSteps();
+        showHint(done === steps.length
+          ? `탐구 미션을 모두 달성했습니다! (${done}/${steps.length}) 🏅`
+          : `미션 ${justDone + 1} 달성! (${done}/${steps.length})`, true);
+      }
+      return;
+    }
+    if (current.stepDone && !stepHold && stepIdx < steps.length - 1 && current.stepDone(stepIdx)) {
+      stepIdx += 1;
+      renderSteps();
+    }
   }
 
   function renderSteps() {
@@ -197,13 +258,28 @@ const Lab = (() => {
     }
     panel.classList.remove('hidden');
     stepIdx = Math.max(0, Math.min(stepIdx, steps.length - 1));
-    $('#stepNo').textContent = `${stepIdx + 1} / ${steps.length}`;
+
+    const mission = isMission();
+    const ok = mission ? okList() : [];
+    if (mission) {
+      const done = ok.filter(Boolean).length;
+      $('#stepsTitle').textContent = '탐구 미션';
+      $('#stepNo').innerHTML = `<b class="mn-cnt${done === steps.length ? ' all' : ''}">${done} / ${steps.length}</b> 달성`;
+    } else {
+      $('#stepsTitle').textContent = '탐구 수행';
+      $('#stepNo').textContent = `${stepIdx + 1} / ${steps.length}`;
+    }
+    $('#stepsBody').innerHTML = steps.map((s, i) => {
+      const isOK = mission ? ok[i] : i < stepIdx;
+      const isCur = i === stepIdx && !isOK;
+      return `
+      <div class="step${isCur ? ' cur' : ''}${isOK ? ' done' : ''}">
+        <span class="no">${isOK ? '✓' : i + 1}</span>
+        <div>${s.t}${s.goal ? `<span class="mn-goal">목표 · ${s.goal}</span>` : ''}</div>
+      </div>`;
+    }).join('');
     $('#stepPrev').disabled = stepIdx === 0;
     $('#stepNext').textContent = stepIdx === steps.length - 1 ? '완료 ✓' : '다음 ▶';
-    $('#stepsBody').innerHTML = steps.map((s, i) => `
-      <div class="step${i === stepIdx ? ' cur' : ''}${i < stepIdx ? ' done' : ''}">
-        <span class="no">${i < stepIdx ? '✓' : i + 1}</span><div>${s}</div>
-      </div>`).join('');
     // 현재 단계가 보이도록 스크롤
     const cur = $('#stepsBody .step.cur');
     if (cur) cur.scrollIntoView({ block: 'nearest' });
@@ -282,7 +358,7 @@ const Lab = (() => {
       const r = canvas.getBoundingClientRect();
       const cx = e.clientX - r.left, cy = e.clientY - r.top;
       const inside = cx >= 0 && cy >= 0 && cx <= r.width && cy <= r.height;
-      current.dragPreview(dragging, inside ? pickPoint(cx, cy) : null);
+      current.dragPreview(dragging, inside ? pickPoint(cx, cy, true) : null);
       return;
     }
     const r = $('#stage').getBoundingClientRect();
@@ -303,7 +379,7 @@ const Lab = (() => {
     dragging = null;
     if (current.dragPreview) current.dragPreview(id, null);
 
-    // 거의 움직이지 않았으면 «클릭» — 부품이 제자리로 들어간다
+    // 거의 움직이지 않았으면 클릭 — 부품이 제자리로 들어간다
     if (!dragMoved && current.clickPlace) {
       current.placeTool(id);
       markPlaced(id);
@@ -316,7 +392,7 @@ const Lab = (() => {
     const cx = e.clientX - r.left, cy = e.clientY - r.top;
     if (cx < 0 || cy < 0 || cx > r.width || cy > r.height) return;
 
-    const point = pickPoint(cx, cy);
+    const point = pickPoint(cx, cy, !!current.dragPreview);
     if (!point) { showHint('실험대 위에 놓아 주세요.'); return; }
 
     if (current.dropAt(id, point) === 'ok') {
@@ -330,11 +406,14 @@ const Lab = (() => {
   }
 
   /** 화면 좌표 → 3D 좌표. 아무것도 안 맞으면 수평면과의 교점을 쓴다. */
-  function pickPoint(cx, cy) {
+  function pickPoint(cx, cy, planeOnly) {
     const scene = current.scene;
-    const pick = scene.pick(cx, cy, (m) => m.isPickable !== false && m.isEnabled());
-    if (pick && pick.hit && pick.pickedPoint) return pick.pickedPoint;
-
+    // 3D 부품 미리보기(dragPreview) 중에는 커서를 따라오는 부품 자신이나 높이가 다른
+    // 바닥들이 픽되어 좌표가 튀므로, 항상 y=0 평면과의 교점만 쓴다.
+    if (!planeOnly) {
+      const pick = scene.pick(cx, cy, (m) => m.isPickable !== false && m.isEnabled());
+      if (pick && pick.hit && pick.pickedPoint) return pick.pickedPoint;
+    }
     const ray = scene.createPickingRay(cx, cy, BABYLON.Matrix.Identity(), scene.activeCamera);
     const plane = BABYLON.Plane.FromPositionAndNormal(
       BABYLON.Vector3.Zero(), new BABYLON.Vector3(0, 1, 0));
@@ -368,7 +447,7 @@ const Lab = (() => {
     const body = $('#recordBody');
     if (!current || !current.recordColumns) return;
     if (!records.length) {
-      body.innerHTML = `<div class="empty">조건을 바꿔 가며 «기록» 을 눌러 결과를 모아 보세요.</div>`;
+      body.innerHTML = `<div class="empty">조건을 바꿔 가며 [기록]을 눌러 결과를 모아 보세요.</div>`;
       return;
     }
     body.innerHTML = `<table>
@@ -480,10 +559,12 @@ const Lab = (() => {
     $('#recAdd').addEventListener('click', addRecord);
     $('#recClear').addEventListener('click', () => { records = []; renderRecords(); });
 
-    // 탐구 수행 단계 이동
-    $('#stepPrev').addEventListener('click', () => { stepIdx -= 1; renderSteps(); });
+    // 탐구 수행 단계 이동 — [이전]으로 돌아가면 자동 진행을 잠시 멈추고,
+    // [다음]으로 앞으로 나가면 자동 진행을 다시 켠다
+    $('#stepPrev').addEventListener('click', () => { stepIdx -= 1; stepHold = true; renderSteps(); });
     $('#stepNext').addEventListener('click', () => {
       const steps = expSteps();
+      stepHold = false;
       if (steps && stepIdx < steps.length - 1) { stepIdx += 1; renderSteps(); }
       else {
         showHint('탐구 수행을 모두 마쳤습니다. 기록표를 정리해 보세요!', true);
@@ -497,7 +578,9 @@ const Lab = (() => {
         current.resetTools();
         current.resetCamera();
         records = []; renderRecords();
+        missionOK[current.id] = null;
         stepIdx = 0;
+        stepHold = false;
         setPhase(current.tools.length ? 'prep' : 'run');
         return;
       }
@@ -510,7 +593,33 @@ const Lab = (() => {
     });
   }
 
-  return { boot, refresh, addRecord, showHint, get phase() { return phase; } };
+  /** 보고서·탐구 현황용 — 실험별 미션 달성 내역 */
+  function missionReport() {
+    return cfg.experiments.map((e) => {
+      const steps = expSteps(e) || [];
+      const ok = okList(e);
+      return {
+        id: e.id, title: e.title, mission: isMission(e),
+        list: steps.map((s, i) => ({ t: s.t, goal: s.goal || '', ok: !!ok[i] })),
+        done: ok.filter(Boolean).length, total: steps.length,
+      };
+    });
+  }
+
+  function switchExp(id) {
+    const b = $(`.top-tabs button[data-exp="${id}"]`);
+    if (b) { b.click(); return true; }
+    return false;
+  }
+
+  return {
+    boot, refresh, addRecord, showHint, missionReport, switchExp,
+    getRecords: () => records.slice(),
+    getColumns: () => (current && current.recordColumns) || [],
+    get current() { return current; },
+    get config() { return cfg; },
+    get phase() { return phase; },
+  };
 })();
 
 
@@ -594,6 +703,53 @@ const LabUI = {
     tag.parent = g;
     g.position.set(opt.x || 0, opt.y || 0, opt.z || 6);
     if (opt.ry) g.rotation.y = opt.ry;
+
+    /* 액자가 공중에 뜨거나 허공에 놓이지 않도록, 첫 프레임에서
+       바로 아래에 있는 «평평한 면»(실험대·바닥) 위에 내려놓는다.
+       아래에 아무것도 없으면 가장 넓은 평평한 면 안쪽으로 끌어당긴 뒤 내려놓는다. */
+    if (opt.drop !== false) {
+      const surfaces = () => scene.meshes.filter((m) => {
+        if (!m.isEnabled() || !m.isVisible || m.name.indexOf('poster') === 0) return false;
+        const bb = m.getBoundingInfo().boundingBox;
+        const w = bb.maximumWorld.x - bb.minimumWorld.x;
+        const d = bb.maximumWorld.z - bb.minimumWorld.z;
+        const h = bb.maximumWorld.y - bb.minimumWorld.y;
+        return w > 6 && d > 4 && h < Math.min(w, d) * 0.5;      // 넓고 납작한 것 = 바닥·실험대
+      });
+      const topAt = (x, z, list) => {
+        let top = null;
+        list.forEach((m) => {
+          const bb = m.getBoundingInfo().boundingBox;
+          const mn = bb.minimumWorld, mx = bb.maximumWorld;
+          if (x < mn.x - 0.2 || x > mx.x + 0.2 || z < mn.z - 0.2 || z > mx.z + 0.2) return;
+          if (mx.y > g.position.y + 2.5) return;                 // 액자보다 훨씬 위는 무시
+          if (top === null || mx.y > top) top = mx.y;
+        });
+        return top;
+      };
+      const place = () => {
+        const list = surfaces();
+        if (!list.length) return;
+        let top = topAt(g.position.x, g.position.z, list);
+        if (top === null) {
+          // 가장 넓은 면 안쪽(가장자리에서 한 뼘)으로 끌어당긴다
+          let best = list[0], bestA = 0;
+          list.forEach((m) => {
+            const bb = m.getBoundingInfo().boundingBox;
+            const a = (bb.maximumWorld.x - bb.minimumWorld.x) * (bb.maximumWorld.z - bb.minimumWorld.z);
+            if (a > bestA) { bestA = a; best = m; }
+          });
+          const bb = best.getBoundingInfo().boundingBox;
+          const M = 1.2;
+          g.position.x = Math.min(bb.maximumWorld.x - M, Math.max(bb.minimumWorld.x + M, g.position.x));
+          g.position.z = Math.min(bb.maximumWorld.z - M, Math.max(bb.minimumWorld.z + M, g.position.z));
+          top = bb.maximumWorld.y;
+        }
+        g.position.y = top - 0.05;
+      };
+      const once = () => { place(); scene.onBeforeRenderObservable.removeCallback(once); };
+      scene.onBeforeRenderObservable.add(once);
+    }
     g.getChildMeshes().forEach((mm) => {
       mm.isPickable = false;
       // 글로우 레이어가 있는 씬에서 액자가 번쩍이지 않도록 제외
@@ -622,6 +778,55 @@ const LabUI = {
   },
 
   /** 버튼 묶음을 상태에 묶는다 */
+  /**
+   * 판 위 전하 배치 — 같은 부호끼리 «서로 밀어내고» 판의 테두리도 밀어낸다.
+   * 가운데부터 채우되 힘이 균형을 이룰 때까지 이완시켜, 뭉치지도 테두리에
+   * 몰리지도 않는 자연스러운 분포를 만든다. (개수마다 한 번만 계산해 캐시)
+   */
+  chargeLayout(W, H, n, margin) {
+    LabUI._chgCache = LabUI._chgCache || {};
+    const key = `${n}@${W}x${H}`;
+    if (LabUI._chgCache[key]) return LabUI._chgCache[key];
+    const M = margin || Math.min(W, H) * 0.13;
+    const x0 = M, x1 = W - M, y0 = M, y1 = H - M;
+    const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+    const pts = [];
+    const GA = Math.PI * (3 - Math.sqrt(5));       // 황금각 — 가운데부터 고르게 퍼진 씨앗
+    for (let i = 0; i < n; i++) {
+      const t = n === 1 ? 0 : Math.sqrt((i + 0.5) / n);
+      const a = i * GA;
+      pts.push({ x: cx + Math.cos(a) * t * (x1 - x0) / 2 * 0.92,
+                 y: cy + Math.sin(a) * t * (y1 - y0) / 2 * 0.92 });
+    }
+    const area = (x1 - x0) * (y1 - y0);
+    const sp = Math.sqrt(area / Math.max(1, n));    // 이웃 사이 목표 간격
+    const K = sp * sp * 0.9;                        // 전하 사이 척력 세기
+    const KW = K * 0.45;                            // 테두리가 밀어내는 힘 (전하보다 약하게)
+    const step = 0.34;
+    for (let it = 0; it < 160; it++) {
+      for (let i = 0; i < n; i++) {
+        let fx = 0, fy = 0;
+        for (let j = 0; j < n; j++) {
+          if (i === j) continue;
+          const dx = pts[i].x - pts[j].x, dy = pts[i].y - pts[j].y;
+          const d2 = Math.max(sp * sp * 0.04, dx * dx + dy * dy);
+          // 쿨롱 척력 — 크기 K/d² 를 «단위 방향»에 곱한다 (d³ 으로 나누는 까닭)
+          const f = K / (d2 * Math.sqrt(d2));
+          fx += dx * f; fy += dy * f;
+        }
+        const lim = sp * 0.35;
+        fx += KW / Math.pow(Math.max(lim, pts[i].x - x0), 2);
+        fx -= KW / Math.pow(Math.max(lim, x1 - pts[i].x), 2);
+        fy += KW / Math.pow(Math.max(lim, pts[i].y - y0), 2);
+        fy -= KW / Math.pow(Math.max(lim, y1 - pts[i].y), 2);
+        pts[i].x = Math.min(x1, Math.max(x0, pts[i].x + fx * step));
+        pts[i].y = Math.min(y1, Math.max(y0, pts[i].y + fy * step));
+      }
+    }
+    LabUI._chgCache[key] = pts;
+    return pts;
+  },
+
   bindOpts(root, dataKey, state, key, onChange, cast = parseFloat) {
     const sel = `[data-${dataKey}]`;
     root.querySelectorAll(sel).forEach((b) => b.addEventListener('click', () => {

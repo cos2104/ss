@@ -454,7 +454,28 @@ const HeatScene = (() => {
     ];
   }
 
+
+  /* ══ 탐구 미션 ═══════════════════════════════
+     0 100회 흔들기 · 1 온도 상승 확인 · 2 질량 바꿔 비교
+     3 높이 바꿔 비교 · 4 기록 3줄                                        */
+  const mis = { mSeen: {}, hSeen: {} };
+  const recs = () => ((typeof Lab !== 'undefined' && Lab.getRecords) ? Lab.getRecords() : []);
+
+  function missionDone(i) {
+    if (state.shakes > 0) {
+      mis.mSeen[state.sandMass.toFixed(2)] = true;
+      mis.hSeen[state.height.toFixed(2)] = true;
+    }
+    if (i === 0) return state.shakes >= 100;
+    if (i === 1) return deltaT() >= 0.05;
+    if (i === 2) return Object.keys(mis.mSeen).length >= 2;
+    if (i === 3) return Object.keys(mis.hSeen).length >= 2;
+    if (i === 4) return recs().length >= 3;
+    return false;
+  }
+
   return {
+    missionDone,
     id: 'heat',
     title: '역학적 에너지에 의한 온도 변화 측정하기',
     guide, prepGuide, tools,

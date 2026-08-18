@@ -642,7 +642,31 @@ const TunnelScene = (() => {
       '지수적 민감도']];
   }
 
+
+  /* ══ 탐구 미션 ═══════════════════════════════
+     0 E < V₀ 에서 통과 확인 · 1 장벽을 얇게 해 확률 높이기 · 2 두껍게 해 급감 확인
+     3 STM 모드 · 4 기록 3줄                                               */
+  const mis = { passed: false, thin: false, thick: false, stm: false };
+  const recs = () => ((typeof Lab !== 'undefined' && Lab.getRecords) ? Lab.getRecords() : []);
+
+  function missionDone(i) {
+    if (state.mode === 'packet') {
+      if (state.E < state.V0 && sim && sim.passed > 0) mis.passed = true;
+      if (state.E < state.V0 && transT() > 0.2) mis.thin = true;
+      if (state.E < state.V0 && transT() < 0.005) mis.thick = true;
+    }
+    if (state.mode === 'stm') mis.stm = true;
+
+    if (i === 0) return mis.passed;
+    if (i === 1) return mis.thin;
+    if (i === 2) return mis.thick;
+    if (i === 3) return mis.stm;
+    if (i === 4) return recs().length >= 3;
+    return false;
+  }
+
   return {
+    missionDone,
     id: 'tunnel',
     noPrep: true,   // 모의실험형 — 배치 없이 바로 시작
     title: '벽을 통과하는 전자 — 터널 효과',

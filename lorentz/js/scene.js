@@ -653,7 +653,34 @@ const LorentzScene = (() => {
       `속력 ${sp.toFixed(2)} 로 가속됨`]];
   }
 
+
+  /* ══ 탐구 미션 ═══════════════════════════════
+     0 음극선 휘게 하기 · 1 자기장 나란할 때 직진 · 2 원운동 반지름 바꾸기
+     3 나선 운동 · 4 사이클로트론 가속                                      */
+  const mis = { bend: {}, along: false, radii: {}, helix: false, cyclo: 0 };
+  const recs = () => ((typeof Lab !== 'undefined' && Lab.getRecords) ? Lab.getRecords() : []);
+
+  function missionDone(i) {
+    if (state.mode === 'crookes') {
+      if (state.magnetDir === 'up' || state.magnetDir === 'down') mis.bend[state.magnetDir] = true;
+      if (state.magnetDir === 'along') mis.along = true;
+    }
+    if (state.mode === 'circle' && state.running) {
+      if (state.pitch >= 88) mis.radii[radius().toFixed(2)] = true;
+      else mis.helix = true;
+    }
+    if (state.mode === 'cyclo' && sim) mis.cyclo = Math.max(mis.cyclo, sim.gapCount || 0);
+
+    if (i === 0) return Object.keys(mis.bend).length >= 1;
+    if (i === 1) return mis.along;
+    if (i === 2) return Object.keys(mis.radii).length >= 2;
+    if (i === 3) return mis.helix;
+    if (i === 4) return mis.cyclo >= 4;
+    return false;
+  }
+
   return {
+    missionDone,
     id: 'lorentz',
     title: '하전 입자 놀이터 — 로런츠 힘 샌드박스',
     guide, prepGuide, tools,

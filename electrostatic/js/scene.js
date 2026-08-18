@@ -635,7 +635,28 @@ const ElectrostaticScene = (() => {
       '물줄기가 풍선 쪽으로 휨', '유전 분극 — 부호와 무관하게 인력']];
   }
 
+
+  /* ══ 탐구 미션 ═══════════════════════════════
+     0~2 도체 공 유도 단계 진행 · 3 물줄기 휘게 하기 · 4 풍선 부호 바꿔도 같음  */
+  const mis = { step: 0, water: false, signs: {} };
+  const recs = () => ((typeof Lab !== 'undefined' && Lab.getRecords) ? Lab.getRecords() : []);
+
+  function missionDone(i) {
+    if (state.mode === 'balls') mis.step = Math.max(mis.step, state.step);
+    if (state.mode === 'water') {
+      mis.water = true;
+      if (state.balloonDist < 2.0) mis.signs[state.balloonSign] = true;
+    }
+    if (i === 0) return mis.step >= 2;
+    if (i === 1) return mis.step >= 3;
+    if (i === 2) return mis.step >= 4;
+    if (i === 3) return mis.water;
+    if (i === 4) return Object.keys(mis.signs).length >= 2;
+    return false;
+  }
+
   return {
+    missionDone,
     id: 'electrostatic',
     title: '도체 공과 물줄기 — 정전기 유도 체험',
     guide, prepGuide, tools,

@@ -22,7 +22,7 @@ const RelativityScene = (() => {
   let placed = {};
 
   const state = {
-    beta: 0.6,        // v / c
+    beta: 0.35,       // v / c (처음에는 중간 속력)
     view: 'S',        // S : 정지한 관찰자 / Sp : 기차에 탄 관찰자
     running: true,
   };
@@ -604,7 +604,27 @@ const RelativityScene = (() => {
     ];
   }
 
+
+  /* ══ 탐구 미션 ═══════════════════════════════
+     0 광속의 60 % 이상 · 1 두 관찰자 시점 모두 보기 · 2 γ ≥ 2
+     3 γ ≈ 1 인 저속 확인 · 4 기록 4줄                                     */
+  const mis = { views: {}, fast: false, slow: false };
+  const recs = () => ((typeof Lab !== 'undefined' && Lab.getRecords) ? Lab.getRecords() : []);
+
+  function missionDone(i) {
+    mis.views[state.view] = true;
+    if (gamma() >= 2) mis.fast = true;
+    if (state.beta <= 0.2) mis.slow = true;
+    if (i === 0) return state.beta >= 0.6;
+    if (i === 1) return Object.keys(mis.views).length >= 2;
+    if (i === 2) return mis.fast;
+    if (i === 3) return mis.slow;
+    if (i === 4) return recs().length >= 4;
+    return false;
+  }
+
   return {
+    missionDone,
     id: 'relativity',
     noPrep: true,   // 모의실험형 — 배치 없이 바로 시작
     title: '빛 시계로 보는 시간 팽창',

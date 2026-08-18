@@ -614,7 +614,33 @@ const SpringWaveScene = (() => {
       '속력 일정!']];
   }
 
+
+  /* ══ 탐구 미션 ═══════════════════════════════
+     0 단진동 실행 · 1 질량·용수철 상수 바꿔 주기 비교 · 2 횡파 · 3 종파
+     4 진동수를 바꿔 파장 비교                                              */
+  const mis = { shm: false, params: {}, trans: false, longw: false, freqs: {} };
+  const recs = () => ((typeof Lab !== 'undefined' && Lab.getRecords) ? Lab.getRecords() : []);
+
+  function missionDone(i) {
+    if (state.mode === 'shm' && state.running) {
+      mis.shm = true;
+      mis.params[state.mass + '/' + state.k] = true;
+    }
+    if (state.mode === 'wave' && state.running) {
+      if (state.waveKind === 'trans') mis.trans = true;
+      else mis.longw = true;
+      mis.freqs[state.freq] = true;
+    }
+    if (i === 0) return mis.shm;
+    if (i === 1) return Object.keys(mis.params).length >= 2;
+    if (i === 2) return mis.trans;
+    if (i === 3) return mis.longw;
+    if (i === 4) return Object.keys(mis.freqs).length >= 2;
+    return false;
+  }
+
   return {
+    missionDone,
     id: 'springwave',
     title: '용수철 실험실 — 단진동과 종파 · 횡파',
     guide, prepGuide, tools,

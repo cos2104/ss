@@ -20,7 +20,7 @@ const MagnetismScene = (() => {
   const state = {
     material: 'ferro',   // ferro | para | dia
     dist: 3.5,           // 자석과 시료 사이 거리 (unit)
-    applied: true,       // 자석을 가까이 두었는가
+    applied: false,      // 처음에는 자석을 멀리 치워 둔다
   };
 
   const MATERIALS = {
@@ -100,7 +100,7 @@ const MagnetismScene = (() => {
 
     glow.addExcludedMesh(scene.getMeshByName('mgResultFace'));
     // 교과서 그림 액자 (배경 소품)
-    LabUI.addPoster(scene, '../assets/thumbs/magnetism.jpg', { x: -8, y: 0, z: 5.5, ry: 0.3 });
+    LabUI.addPoster(scene, '../assets/thumbs/magnetism.jpg', { x: -9.5, y: -1.2, z: 4.5, ry: 0.34 });
 
     resetTools();
     return scene;
@@ -331,7 +331,10 @@ const MagnetismScene = (() => {
     if (!scene) return;
     const m = MATERIALS[state.material];
 
-    magnet.position.x = SAMPLE_X - state.dist - 3.4;
+    // 자석을 «치움»으로 두면 눈에 보이게 멀리 물러난다
+    // (화면에는 가까이 있는데 반응이 없어 보이면 오개념이 생긴다)
+    const away = state.applied ? 0 : 6.5;
+    magnet.position.x = SAMPLE_X - state.dist - 3.4 - away;
     if (holders.magnet) holders.magnet.position.x = magnet.position.x;
 
     sampleBody.material.diffuseColor = B().Color3.FromHexString(m.color);
@@ -554,7 +557,30 @@ const MagnetismScene = (() => {
     ];
   }
 
+
+  /* ══ 탐구 미션 ═══════════════════════════════
+     0 강자성체 끌림 · 1 상자성체 · 2 반자성체 밀림 · 3 자석을 치운 뒤 잔류 자기
+     4 세 물질 모두 기록                                                   */
+  const mis = { seen: {}, ferroApplied: false, remain: false };
+  const recs = () => ((typeof Lab !== 'undefined' && Lab.getRecords) ? Lab.getRecords() : []);
+
+  function missionDone(i) {
+    if (state.applied) {
+      mis.seen[state.material] = true;
+      if (state.material === 'ferro') mis.ferroApplied = true;
+    } else if (mis.ferroApplied && state.material === 'ferro') {
+      mis.remain = true;
+    }
+    if (i === 0) return !!mis.seen.ferro;
+    if (i === 1) return !!mis.seen.para;
+    if (i === 2) return !!mis.seen.dia;
+    if (i === 3) return mis.remain;
+    if (i === 4) return new Set(recs().map((r) => String(r[0]))).size >= 3;
+    return false;
+  }
+
   return {
+    missionDone,
     id: 'magnetism',
     title: '여러 가지 물질의 자성 알아보기',
     guide, prepGuide, tools,

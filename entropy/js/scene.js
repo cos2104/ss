@@ -624,7 +624,32 @@ const EntropyScene = (() => {
       `${sim.TH.toFixed(1)} K / ${sim.TL.toFixed(1)} K`, '—', '+' + sim.dS.toFixed(3) + ' J/K']];
   }
 
+
+  /* ══ 탐구 미션 ═══════════════════════════════
+     0 구슬 섞기 실행 · 1 거의 반반이 되는 것 확인 · 2 경우의 수가 큰 상태
+     3 열 이동 모드 · 4 기록 3줄                                           */
+  const mis = { ran: false, half: false, heat: false, maxW: 0 };
+  const recs = () => ((typeof Lab !== 'undefined' && Lab.getRecords) ? Lab.getRecords() : []);
+
+  function missionDone(i) {
+    if (state.mode === 'marbles' && state.running) {
+      mis.ran = true;
+      const a = nA();
+      if (Math.abs(a - N_MARBLE / 2) <= N_MARBLE * 0.15) mis.half = true;
+      mis.maxW = Math.max(mis.maxW, lnW(a));
+    }
+    if (state.mode === 'heat' && state.running) mis.heat = true;
+
+    if (i === 0) return mis.ran;
+    if (i === 1) return mis.half;
+    if (i === 2) return mis.maxW >= lnW(Math.round(N_MARBLE / 2)) - 0.4;
+    if (i === 3) return mis.heat;
+    if (i === 4) return recs().length >= 3;
+    return false;
+  }
+
   return {
+    missionDone,
     id: 'entropy',
     noPrep: true,   // 모의실험형 — 배치 없이 바로 시작
     title: '상자 속 구슬 — 엔트로피 샌드박스',

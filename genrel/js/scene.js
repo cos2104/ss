@@ -812,7 +812,28 @@ const GenrelScene = (() => {
     return [[sc.name, sc.a.toFixed(1), scaleKg().toFixed(1), scaleN().toFixed(0), note]];
   }
 
+
+  /* ══ 탐구 미션 ═══════════════════════════════
+     0 자유 낙하(무중력) · 1 가속하는 우주선 = 지표면 · 2 빛의 휘어짐 비교
+     3 중력과 시간 · 4 기록 3줄                                            */
+  const mis = { sc: {}, light: {}, clock: false };
+  const recs = () => ((typeof Lab !== 'undefined' && Lab.getRecords) ? Lab.getRecords() : []);
+
+  function missionDone(i) {
+    if (state.mode === 'elevator') mis.sc[state.scenario] = true;
+    if (state.mode === 'light') mis.light[state.lightCase] = true;
+    if (state.mode === 'clock') mis.clock = true;
+
+    if (i === 0) return !!mis.sc.freefall;
+    if (i === 1) return !!mis.sc.spaceAcc;
+    if (i === 2) return Object.keys(mis.light).length >= 2;
+    if (i === 3) return mis.clock;
+    if (i === 4) return recs().length >= 3;
+    return false;
+  }
+
   return {
+    missionDone,
     id: 'genrel',
     noPrep: true,   // 모의실험형 — 배치 없이 바로 시작
     title: '등가 원리 승강기 — 시공간 여행',

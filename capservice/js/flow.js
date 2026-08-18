@@ -1,12 +1,12 @@
 /**
- * 지능형 과학실 ON «학습 흐름» — 사이드바 통합판
+ * 지능형 과학실 ON 학습 흐름 — 사이드바 통합판
  *
  * 흐름(학습목표·진단·탐구·확인·정리·창의·보고서)을 별도 메뉴 바 없이
  * 우측 사이드바에 녹여 넣는다.
  *   · 학습목표/사전학습/도움말/안전 — 기존 버튼 그대로
  *   · 진단하기 / 창의적으로 생각하기 / 보고서 다운로드 — 버튼 추가
- *   · 퀴즈 버튼 → «확인하기» (기존 5문항 + 오답 시 실험 이동 + 서술형 1문항)
- *   · 정리하기 — 핵심정리 패널 아래에 «나의 탐구 현황»으로 덧붙임
+ *   · 퀴즈 버튼 → 확인하기 (기존 5문항 + 오답 시 실험 이동 + 서술형 1문항)
+ *   · 정리하기 — 핵심정리 패널 아래에 나의 탐구 현황으로 덧붙임
  *   · 탐구하기 소주제 이동 — 상단 실험 탭이 담당
  */
 const LabFlow = (() => {
@@ -58,7 +58,7 @@ const LabFlow = (() => {
     /* LED — 닫힌 회로 두 개를 나란히: 왼쪽은 정방향(전류가 흘러 켜짐),
        오른쪽은 LED만 반대로 끼운 같은 회로(전류가 흐르지 않아 꺼짐).
        도선은 전지 사이만 빼고 끊김 없이 이어지고, LED 기호 양끝에
-       «+ 긴 다리 / − 짧은 다리»를 표기한다. */
+       + 긴 다리 / − 짧은 다리를 표기한다. */
     const loop = (x0, fwd) => {
       const wire = `stroke="#8899ad" stroke-width="4" fill="none" stroke-linecap="round"`;
       // 위 변은 한 번에 그려 끊김이 없게 하고, LED 기호는 그 위에 겹쳐 그린다
@@ -303,7 +303,7 @@ const LabFlow = (() => {
       <textarea id="fcText" style="width:100%;min-height:130px;border:1px solid var(--line);border-radius:9px;
         padding:10px 12px;font-size:14px;font-family:inherit;resize:vertical"
         placeholder="예: 알루미늄 포일 두 장 사이에 얇은 종이 한 장을 끼우고 돌돌 말아서 만든다. 종이를 더 얇게 하면 간격이 좁아지고, 포일을 더 길게 하면 면적이 넓어져 더 많은 전하를 저장할 수 있다.">${esc(state.creative)}</textarea>
-      <p style="font-size:13px;color:#62718a;margin-top:6px">쓴 내용은 «보고서 다운로드»에 함께 담깁니다.</p>`;
+      <p style="font-size:13px;color:#62718a;margin-top:6px">쓴 내용은 보고서 다운로드에 함께 담깁니다.</p>`;
   }
   function bindCreative() {
     const ta = $('#fcText');

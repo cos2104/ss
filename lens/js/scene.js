@@ -25,7 +25,7 @@ const LensScene = (() => {
     type: 'convex',    // convex | concave
     f: 15,             // 초점 거리 (cm)
     a: 40,             // 물체(LED) ~ 렌즈 거리 (cm)
-    b: 24,             // 렌즈 ~ 스크린 거리 (cm)  ← 사용자가 맞춰야 하는 값
+    b: 14,             // 렌즈 ~ 스크린 거리 (cm)  ← 사용자가 맞춰야 하는 값 (처음엔 흐릿하게)
     objH: 6,           // 물체 크기 (cm)
     showRays: true,
   };
@@ -334,26 +334,34 @@ const LensScene = (() => {
     const V = (x, y) => new (B().Vector3)(x, y, 0);
     const lines = [];
 
+    // 스크린을 세워 두면 빛은 스크린에서 «멈춘다» (스크린을 통과해 나가면 오개념)
+    const endCm = placed.screen ? Math.max(0.5, state.b) : BENCH_L / 2;
+    const endX = endCm * U;
+
     // 광축
-    lines.push([V(-BENCH_L / 2 * U, AXIS_Y), V(BENCH_L / 2 * U, AXIS_Y)]);
+    lines.push([V(-BENCH_L / 2 * U, AXIS_Y), V(endX, AXIS_Y)]);
     // ① 광축에 나란히 온 빛 → 렌즈에서 꺾여 초점으로
     lines.push([V(objX, tipY), V(0, lensY)]);
     // ② 렌즈 중심을 지나는 빛 (그대로 직진)
-    lines.push([V(objX, tipY), V(BENCH_L / 2 * U, AXIS_Y - (tipY - AXIS_Y) * (BENCH_L / 2 / state.a))]);
+    lines.push([V(objX, tipY), V(endX, AXIS_Y - (tipY - AXIS_Y) * (endCm / state.a))]);
 
     if (!info.infinite) {
       const imgX = info.bIdeal * U;
       const imgTipY = AXIS_Y + (tipY - AXIS_Y) * info.m;
       if (info.real) {
         // 실상 : 굴절 후 실제로 모인다. 상을 지나 같은 기울기로 계속 나아간다
-        lines.push([V(0, lensY), V(imgX, imgTipY)]);
-        const endX = BENCH_L / 2 * U;
-        const slope = (imgTipY - lensY) / imgX;       // 굴절광의 기울기
-        lines.push([V(imgX, imgTipY), V(endX, imgTipY + slope * (endX - imgX))]);
+        const slope = (imgTipY - lensY) / imgX;      // 굴절광의 기울기
+        if (endX < imgX) {
+          // 상이 맺히기 전에 스크린이 있으면 거기서 끊긴다 (아직 초점이 안 맞은 상태)
+          lines.push([V(0, lensY), V(endX, lensY + slope * endX)]);
+        } else {
+          lines.push([V(0, lensY), V(imgX, imgTipY)]);
+          lines.push([V(imgX, imgTipY), V(endX, imgTipY + slope * (endX - imgX))]);
+        }
       } else {
         // 허상 : 나가는 빛의 연장선이 물체 쪽에서 만난다
         const dir = new (B().Vector3)(1, (lensY - imgTipY) / (0 - imgX), 0).normalize();
-        lines.push([V(0, lensY), V(BENCH_L / 2 * U, lensY + dir.y / dir.x * (BENCH_L / 2 * U))]);
+        lines.push([V(0, lensY), V(endX, lensY + dir.y / dir.x * endX)]);
         lines.push([V(imgX, imgTipY), V(0, lensY)]);
       }
       // 상 화살표
@@ -665,7 +673,30 @@ const LensScene = (() => {
     ];
   }
 
+
+  /* ══ 탐구 미션 ═══════════════════════════════
+     0 또렷한 실상 맺기 · 1 물체를 초점 안쪽에 두어 허상 · 2 a = 2f 에서 같은 크기
+     3 오목 렌즈 관찰 · 4 기록 4줄                                         */
+  const mis = { sharp: false, virtual: false, same: false, concave: false };
+  const recs = () => ((typeof Lab !== 'undefined' && Lab.getRecords) ? Lab.getRecords() : []);
+
+  function missionDone(i) {
+    const im = image();
+    if (state.type === 'convex' && im.real && !im.infinite && sharpness() > 0.9) mis.sharp = true;
+    if (state.type === 'convex' && state.a < state.f - 0.5) mis.virtual = true;
+    if (state.type === 'convex' && Math.abs(state.a - 2 * state.f) < 1.2 && Math.abs(Math.abs(im.m) - 1) < 0.12) mis.same = true;
+    if (state.type === 'concave') mis.concave = true;
+
+    if (i === 0) return mis.sharp;
+    if (i === 1) return mis.virtual;
+    if (i === 2) return mis.same;
+    if (i === 3) return mis.concave;
+    if (i === 4) return recs().length >= 4;
+    return false;
+  }
+
   return {
+    missionDone,
     id: 'lens',
     title: '볼록 렌즈에 의한 실상 관찰하기',
     guide, prepGuide, tools,

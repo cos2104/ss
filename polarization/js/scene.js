@@ -525,7 +525,32 @@ const PolarizationScene = (() => {
       state.source === 'lcd' || state.source === 'water' ? '선형 편광' : '변화 없음']];
   }
 
+
+  /* ══ 탐구 미션 ═══════════════════════════════
+     0 편광판 각도 바꾸기 · 1 완전 차단(90°) · 2 말뤼스 법칙 기록
+     3 LCD 확인 · 4 OLED·백열등과 비교                                     */
+  const mis = { turned: false, blocked: false, src: {}, th0: null };
+  const recs = () => ((typeof Lab !== 'undefined' && Lab.getRecords) ? Lab.getRecords() : []);
+
+  function missionDone(i) {
+    if (state.mode === 'two') {
+      if (mis.th0 === null) mis.th0 = state.thB;
+      else if (Math.abs(state.thB - mis.th0) > 5) mis.turned = true;
+      const d = Math.abs(((state.thB - state.thA) % 180 + 180) % 180 - 90);
+      if (d < 3) mis.blocked = true;
+    } else {
+      mis.src[state.source] = true;
+    }
+    if (i === 0) return mis.turned;
+    if (i === 1) return mis.blocked;
+    if (i === 2) return recs().filter((r) => String(r[0]) === '편광판 2개').length >= 3;
+    if (i === 3) return !!mis.src.lcd;
+    if (i === 4) return Object.keys(mis.src).length >= 3;
+    return false;
+  }
+
   return {
+    missionDone,
     id: 'polarization',
     title: '편광판 돌리기 — 말뤼스 법칙과 디스플레이',
     guide, prepGuide, tools,

@@ -22,7 +22,7 @@ const PhotoScene = (() => {
     metal: 'cesium',
     lambda: 400,     // 빛의 파장 (nm)
     intensity: 0.6,  // 빛의 세기 (0~1)
-    on: true,
+    on: false,       // 처음에는 광원이 꺼져 있다
   };
 
   // 금속별 일함수 (eV)
@@ -97,7 +97,7 @@ const PhotoScene = (() => {
 
     glow.addExcludedMesh(scene.getMeshByName('phMeterFace'));
     // 교과서 그림 액자 (배경 소품)
-    LabUI.addPoster(scene, '../assets/thumbs/photoelectric.jpg', { x: -8, y: 0, z: 5, ry: 0.3 });
+    LabUI.addPoster(scene, '../assets/thumbs/photoelectric.jpg', { x: -11.5, y: 0, z: 2.5, ry: 0.5 });
 
     resetTools();
     return scene;
@@ -269,10 +269,12 @@ const PhotoScene = (() => {
     ctx.font = 'bold 24px sans-serif';
     ctx.fillText('μA', 232, 88);
 
-    ctx.fillStyle = emits() ? '#5ef0a0' : '#e8663f';
+    // 광원이 꺼져 있으면 «방출» 표시를 하지 않는다 (오개념 방지)
+    const lit = state.on && emits();
+    ctx.fillStyle = !state.on ? '#8e9bad' : (lit ? '#5ef0a0' : '#e8663f');
     ctx.font = 'bold 19px "Noto Sans KR", sans-serif';
     ctx.textBaseline = 'bottom';
-    ctx.fillText(emits() ? '광전자 방출!' : '방출 안 됨', 150, 176);
+    ctx.fillText(!state.on ? '광원 꺼짐' : (lit ? '광전자 방출!' : '방출 안 됨'), 150, 176);
 
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     meterTex.update();
@@ -564,7 +566,37 @@ const PhotoScene = (() => {
     ];
   }
 
+
+  /* ══ 탐구 미션 ═══════════════════════════════
+     0 전자 방출 성공 · 1 문턱 진동수 확인 · 2 세기를 바꿔도 최대 KE 그대로
+     3 금속 2가지 비교 기록 · 4 기록 4줄                                   */
+  const mis = { emitted: false, blocked: false };
+  const recs = () => ((typeof Lab !== 'undefined' && Lab.getRecords) ? Lab.getRecords() : []);
+
+  function missionDone(i) {
+    if (state.on && emits()) mis.emitted = true;
+    if (state.on && !emits()) mis.blocked = true;
+
+    if (i === 0) return mis.emitted;
+    if (i === 1) return mis.emitted && mis.blocked;
+    if (i === 2) {
+      // 같은 금속·같은 파장인데 세기만 다른 두 기록 → 최대 운동 에너지가 같다
+      const rs = recs().filter((r) => r.length >= 8);
+      for (let a = 0; a < rs.length; a++) {
+        for (let b = 0; b < rs.length; b++) {
+          if (a === b) continue;
+          if (rs[a][0] === rs[b][0] && rs[a][2] === rs[b][2] && rs[a][4] !== rs[b][4]) return true;
+        }
+      }
+      return false;
+    }
+    if (i === 3) return new Set(recs().map((r) => String(r[0]))).size >= 2;
+    if (i === 4) return recs().length >= 4;
+    return false;
+  }
+
   return {
+    missionDone,
     id: 'photoelectric',
     title: '광전 효과 — 빛의 입자성 확인하기',
     guide, prepGuide, tools,

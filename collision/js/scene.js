@@ -571,7 +571,35 @@ const CollisionScene = (() => {
     ];
   }
 
+
+  /* ══ 탐구 미션 ═══════════════════════════════
+     0 충돌 실행 · 1 운동량 보존 기록 · 2 탄성 충돌 · 3 완전 비탄성(한 덩어리)
+     4 질량이 다른 조건으로 기록 3줄                                       */
+  const mis = { ran: false, types: {}, massDiff: false };
+  const recs = () => ((typeof Lab !== 'undefined' && Lab.getRecords) ? Lab.getRecords() : []);
+
+  function missionDone(i) {
+    if (state.running) {
+      mis.ran = true;
+      mis.types[state.type] = true;
+      if (Math.abs(state.mA - state.mB) > 1e-6) mis.massDiff = true;
+    }
+    if (i === 0) return mis.ran;
+    if (i === 1) {
+      return recs().some((r) => r.length >= 7
+        && Math.abs(parseFloat(r[5]) - parseFloat(r[6])) < 0.005);
+    }
+    if (i === 2) return !!mis.types.elastic;
+    if (i === 3) return !!mis.types.perfect;
+    if (i === 4) {
+      return mis.massDiff && recs().filter((r) => Math.abs(parseFloat(r[0]) - parseFloat(r[1])) > 1e-6).length >= 1
+        && recs().length >= 3;
+    }
+    return false;
+  }
+
   return {
+    missionDone,
     id: 'collision',
     title: '일차원 충돌 상황에서 운동량 보존 확인하기',
     guide, prepGuide, tools,

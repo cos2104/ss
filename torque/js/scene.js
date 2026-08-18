@@ -19,8 +19,8 @@ const TorqueScene = (() => {
   let placed = {};
 
   const state = {
-    posL: 1, nL: 4,     // 왼쪽 : 눈금 위치, 추 개수
-    posR: 2, nR: 2,     // 오른쪽
+    posL: 2, nL: 3,     // 왼쪽 : 눈금 위치, 추 개수 (처음에는 기울어진 상태)
+    posR: 3, nR: 1,     // 오른쪽
   };
 
   /* ══ 물리 ═══════════════════════════════════ */
@@ -78,7 +78,7 @@ const TorqueScene = (() => {
     buildPlaceholders();
 
     // 교과서 그림 액자 (배경 소품)
-    LabUI.addPoster(scene, '../assets/thumbs/torque.jpg', { x: -8, y: 0, z: 5, ry: 0.3 });
+    LabUI.addPoster(scene, '../assets/thumbs/torque.jpg', { x: -10.5, y: -0.5, z: 3.5, ry: 0.42 });
 
     resetTools();
     return scene;
@@ -453,7 +453,38 @@ const TorqueScene = (() => {
     ];
   }
 
+
+  /* ══ 탐구 미션 ═══════════════════════════════
+     0 평형 만들기 · 1 개수를 다르게 하고 평형 · 2 평형 조합 2가지 기록
+     3 «거리 2배 → 추 절반» 관계 확인 · 4 평형과 기울어짐을 모두 기록      */
+  const mis = { balSeen: 0 };
+  const recs = () => ((typeof Lab !== 'undefined' && Lab.getRecords) ? Lab.getRecords() : []);
+  const balRows = () => recs().filter((r) => String(r[4]).indexOf('평형') === 0);
+
+  function missionDone(i) {
+    const t = torques();
+    if (i === 0) return t.balanced;
+    if (i === 1) return t.balanced && state.nL !== state.nR;
+    if (i === 2) {
+      const keys = new Set(balRows().map((r) => r[0] + '|' + r[1]));
+      return keys.size >= 2;
+    }
+    if (i === 3) {
+      // 한쪽 거리가 2배면 추는 절반 — 어느 쪽이든 성립하면 인정
+      const a = state.posR === 2 * state.posL && state.nL === 2 * state.nR;
+      const b = state.posL === 2 * state.posR && state.nR === 2 * state.nL;
+      return t.balanced && (a || b);
+    }
+    if (i === 4) {
+      const rs = recs();
+      return rs.some((r) => String(r[4]).indexOf('평형') === 0)
+          && rs.some((r) => String(r[4]).indexOf('기울') === 0);
+    }
+    return false;
+  }
+
   return {
+    missionDone,
     id: 'torque',
     title: '지레가 평형을 이루는 조건 찾기',
     guide, prepGuide, tools,

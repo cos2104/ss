@@ -684,7 +684,31 @@ const LaserScene = (() => {
       inverted() ? '레이저 발진!' : '흡수 우세']];
   }
 
+
+  /* ══ 탐구 미션 ═══════════════════════════════
+     0 유도 방출 관찰 · 1 밀도 반전 달성 · 2 준안정 상태 없이 실패 확인
+     3 공진기에서 발진 · 4 기록 3줄                                        */
+  const mis = { proc: false, inv: false, noMeta: false, lase: false };
+  const recs = () => ((typeof Lab !== 'undefined' && Lab.getRecords) ? Lab.getRecords() : []);
+
+  function missionDone(i) {
+    if (state.scene === 'process' && state.running) mis.proc = true;
+    if (state.scene === 'inversion') {
+      if (excitedFrac() > 0.5) mis.inv = true;
+      if (!state.metastable && state.pump >= 60 && excitedFrac() <= 0.5) mis.noMeta = true;
+    }
+    if (state.scene === 'cavity' && inverted()) mis.lase = true;
+
+    if (i === 0) return mis.proc;
+    if (i === 1) return mis.inv;
+    if (i === 2) return mis.noMeta;
+    if (i === 3) return mis.lase;
+    if (i === 4) return recs().length >= 3;
+    return false;
+  }
+
   return {
+    missionDone,
     id: 'laser',
     noPrep: true,   // 모의실험형 — 배치 없이 바로 시작
     title: '빛을 기르는 공장 — 레이저 이야기',

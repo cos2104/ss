@@ -103,7 +103,7 @@ const InductionScene = (() => {
     glow.addExcludedMesh(scene.getMeshByName('meterBody'));
 
     // 교과서 그림 액자 (배경 소품)
-    LabUI.addPoster(scene, '../assets/thumbs/induction.jpg', { x: -9, y: 0, z: 5.5, ry: 0.3 });
+    LabUI.addPoster(scene, '../assets/thumbs/induction.jpg', { x: -13, y: 0, z: 5.5, ry: 0.45 });
 
     resetTools();
     return scene;
@@ -677,7 +677,43 @@ const InductionScene = (() => {
   /** 조건을 바꾸면 최댓값을 새로 잰다 */
   function onEnterRun() { peakEmf = 0; }
 
+
+  /* ══ 탐구 미션 ═══════════════════════════════
+     0 자석을 움직여 유도 전류 · 1 멈추면 0 · 2 감은 수 2배 기록
+     3 빠르기 2가지 기록 · 4 기록 4줄                                      */
+  const mis = { moved: false, stopZero: false, lastX: null, still: 0 };
+  const recs = () => ((typeof Lab !== 'undefined' && Lab.getRecords) ? Lab.getRecords() : []);
+  const uniq = (col) => new Set(recs().map((r) => String(r[col]))).size;
+
+  function missionDone(i) {
+    if (peakEmf > 0.05) mis.moved = true;
+    // 자석이 멈춘 채 유도 기전력이 0 → «변화가 있어야 전류가 흐른다»
+    if (mis.lastX !== null && Math.abs(state.x - mis.lastX) < 0.02 && !state.auto) {
+      mis.still += 1;
+      if (mis.moved && mis.still >= 3 && Math.abs(emf) < 0.02) mis.stopZero = true;
+    } else {
+      mis.still = 0;
+    }
+    mis.lastX = state.x;
+
+    if (i === 0) return mis.moved;
+    if (i === 1) return mis.stopZero;
+    if (i === 2) {
+      const rs = recs();
+      for (let a = 0; a < rs.length; a++) {
+        for (let b = 0; b < rs.length; b++) {
+          if (a !== b && Math.abs(parseFloat(rs[b][0]) - 2 * parseFloat(rs[a][0])) < 1) return true;
+        }
+      }
+      return false;
+    }
+    if (i === 3) return uniq(2) >= 2;
+    if (i === 4) return recs().length >= 4;
+    return false;
+  }
+
   return {
+    missionDone,
     id: 'induction',
     title: '전자기 유도 — 흔들면 불이 켜지는 손전등',
     guide, prepGuide, tools,

@@ -604,7 +604,30 @@ const StarlightScene = (() => {
       sim.correct ? sim.answer.map((k) => ELEMENTS[k].name).join('+') : '(다시 도전)']];
   }
 
+
+  /* ══ 탐구 미션 ═══════════════════════════════
+     0~1 핵융합 단계 · 2 스펙트럼 판정 1회 · 3 사건 2건 해결 · 4 기록 2줄  */
+  const mis = { fusion: 0, judged: 0, solved: 0, cases: {} };
+  const recs = () => ((typeof Lab !== 'undefined' && Lab.getRecords) ? Lab.getRecords() : []);
+
+  function missionDone(i) {
+    if (state.mode === 'fusion') mis.fusion = Math.max(mis.fusion, state.fusionStep);
+    if (state.mode === 'detective' && sim && sim.judged) {
+      mis.judged = 1;
+      if (sim.correct) mis.cases[sim.caseNo] = true;
+    }
+    mis.solved = Object.keys(mis.cases).length;
+
+    if (i === 0) return mis.fusion >= 2;
+    if (i === 1) return mis.fusion >= 3;
+    if (i === 2) return mis.judged >= 1;
+    if (i === 3) return mis.solved >= 2;
+    if (i === 4) return recs().length >= 2;
+    return false;
+  }
+
   return {
+    missionDone,
     id: 'starlight',
     noPrep: true,   // 모의실험형 — 배치 없이 바로 시작
     title: '별빛 수사대 — 스펙트럼으로 원소 찾기',

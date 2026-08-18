@@ -483,7 +483,26 @@ const EngineScene = (() => {
     ];
   }
 
+
+  /* ══ 탐구 미션 ═══════════════════════════════
+     0 기관 작동 · 1 효율 40% 이상 · 2 고열원 온도 2가지 기록
+     3 저열원 온도 2가지 기록 · 4 기록 4줄                                 */
+  const mis = { ran: false };
+  const recs = () => ((typeof Lab !== 'undefined' && Lab.getRecords) ? Lab.getRecords() : []);
+  const uniq = (col) => new Set(recs().map((r) => String(r[col]))).size;
+
+  function missionDone(i) {
+    if (state.running) mis.ran = true;
+    if (i === 0) return mis.ran;
+    if (i === 1) return energies().e >= 0.4;
+    if (i === 2) return uniq(0) >= 2;
+    if (i === 3) return uniq(1) >= 2;
+    if (i === 4) return recs().length >= 4;
+    return false;
+  }
+
   return {
+    missionDone,
     id: 'engine',
     title: '열기관과 열효율',
     guide, prepGuide, tools,

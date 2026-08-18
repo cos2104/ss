@@ -604,7 +604,32 @@ const AtomScene = (() => {
       '위치는 확률로만 말할 수 있음']];
   }
 
+
+  /* ══ 탐구 미션 ═══════════════════════════════
+     0 짧은 파장으로 측정 · 1 긴 파장으로 측정 · 2 보어 모형 살펴보기
+     3 전자구름 200회 관측 · 4 기록 3줄                                    */
+  const mis = { shortL: false, longL: false, bohr: false, cloud: 0 };
+  const recs = () => ((typeof Lab !== 'undefined' && Lab.getRecords) ? Lab.getRecords() : []);
+
+  function missionDone(i) {
+    if (state.mode === 'uncertainty') {
+      if (state.lambda <= 0.6) mis.shortL = true;
+      if (state.lambda >= 1.6) mis.longL = true;
+    }
+    if (state.mode === 'model') {
+      if (state.model === 'bohr') mis.bohr = true;
+      if (state.model === 'cloud') mis.cloud = Math.max(mis.cloud, cloudDots.length);
+    }
+    if (i === 0) return mis.shortL;
+    if (i === 1) return mis.longL;
+    if (i === 2) return mis.bohr;
+    if (i === 3) return mis.cloud >= 200;
+    if (i === 4) return recs().length >= 3;
+    return false;
+  }
+
   return {
+    missionDone,
     id: 'atom',
     noPrep: true,   // 모의실험형 — 배치 없이 바로 시작
     title: '전자구름 속으로 — 불확정성과 원자 모형',

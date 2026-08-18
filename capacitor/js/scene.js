@@ -879,7 +879,31 @@ const CapacitorScene = (() => {
       sim.V.toFixed(2), sim.I.toFixed(2), note]];
   }
 
+
+  /* ══ 탐구 미션 ═══════════════════════════════
+     0 충전 · 1 열림에서 전하 보존 · 2 방전으로 LED 켜기
+     3 LED 를 거꾸로 끼우면 방전되지 않음 · 4 내부 모드에서 간격·면적 바꾸기 */
+  const mis = { charged: false, held: false, lit: false, blocked: false, inside: {} };
+
+  function missionDone(i) {
+    if (state.mode === 'circuit') {
+      if (state.sw === 'chg' && sim.V > state.volt * 0.6) mis.charged = true;
+      if (state.sw === 'open' && sim.V > 0.5) mis.held = true;
+      if (state.sw === 'dis' && state.ledDir > 0 && sim.I > 0.05) mis.lit = true;
+      if (state.sw === 'dis' && state.ledDir < 0 && sim.V > 0.5) mis.blocked = true;
+    } else {
+      mis.inside[state.areaCm2 + '/' + state.gapMm] = true;
+    }
+    if (i === 0) return mis.charged;
+    if (i === 1) return mis.held;
+    if (i === 2) return mis.lit;
+    if (i === 3) return mis.blocked;
+    if (i === 4) return Object.keys(mis.inside).length >= 3;
+    return false;
+  }
+
   return {
+    missionDone,
     id: 'capacitor',
     title: '축전기의 충전과 방전 — 실제 회로',
     guide, prepGuide, tools,

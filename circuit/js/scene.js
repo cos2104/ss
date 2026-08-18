@@ -136,24 +136,54 @@ const CircuitScene = (() => {
     });
   }
 
+  /** 저항값 → 4색띠 (갈1 빨2 주3 노4 초5 파6 보7 회8 흰9 검0, 배수띠 + 금색 오차띠) */
+  const BAND_HEX = ['#1a1a1a', '#8a5a2b', '#d0453a', '#e08a30', '#e8c840',
+                    '#3fa05a', '#3a6fd0', '#8a4ad0', '#9aa4b0', '#f2f2f2'];
+  function bandsOf(ohm) {
+    const d = Math.max(1, Math.round(ohm));
+    const str = String(d);
+    const d1 = +str[0];
+    const d2 = str.length > 1 ? +str[1] : 0;
+    const mult = str.length > 1 ? str.length - 2 : 0;
+    return [BAND_HEX[d1], BAND_HEX[d2], BAND_HEX[Math.max(0, mult)], '#c8a020'];
+  }
+
   function buildResistor(name, x, hex) {
     const g = new (B().TransformNode)('res' + name, scene);
-    const base = B().MeshBuilder.CreateBox('resBase' + name, { width: 4.2, height: 0.7, depth: 2.6 }, scene);
-    base.position.set(x, TABLE_Y + 0.35, -2.6);
-    base.material = mat('resBaseMat' + name, hex, '#fff0d0', 40);
+    // 받침 (부품 홀더)
+    const base = B().MeshBuilder.CreateBox('resBase' + name, { width: 4.2, height: 0.32, depth: 1.6 }, scene);
+    base.position.set(x, TABLE_Y + 0.16, -2.6);
+    base.material = mat('resBaseMat' + name, '#3c4756', '#8794a6', 48);
     base.parent = g;
 
-    // 저항 이름표
-    const label = B().MeshBuilder.CreatePlane('resLab' + name, { width: 2.2, height: 1.1 }, scene);
-    label.position.set(x, TABLE_Y + 0.71, -2.6);
-    label.rotation.x = Math.PI / 2;
-    const tex = new (B().DynamicTexture)('resLabTex' + name, { width: 220, height: 110 }, scene, true);
+    // 세라믹 저항 몸통 — 실제 부품처럼 눕힌 원기둥
+    const body = B().MeshBuilder.CreateCylinder('resBody' + name, { height: 2.2, diameter: 0.9 }, scene);
+    body.rotation.z = Math.PI / 2;
+    body.position.set(x, TABLE_Y + 0.9, -2.6);
+    body.material = mat('resBodyMat' + name, '#d8c9a0', '#f4ecd8', 56);
+    body.parent = g;
+    // 색띠 4개 (저항값에 맞춰 update() 에서 색을 바꾼다)
+    g._bands = [0, 1, 2, 3].map((i) => {
+      const b = B().MeshBuilder.CreateTorus('resBand' + name + i, { diameter: 0.94, thickness: 0.14 }, scene);
+      b.rotation.z = Math.PI / 2;
+      b.position.set(x - 0.75 + i * 0.42 + (i === 3 ? 0.24 : 0), TABLE_Y + 0.9, -2.6);
+      b.material = mat('resBandMat' + name + i, '#1a1a1a');
+      b.parent = g;
+      return b;
+    });
+
+    // 저항 이름표 — 받침 앞쪽에 눕혀 «A · 10 Ω» 처럼 표시 (update 에서 다시 그린다)
+    const label = B().MeshBuilder.CreatePlane('resLab' + name, { width: 3.2, height: 1.2 }, scene);
+    label.position.set(x, TABLE_Y + 1.95, -2.6);
+    label.billboardMode = B().Mesh.BILLBOARDMODE_Y;
+    const tex = new (B().DynamicTexture)('resLabTex' + name, { width: 300, height: 110 }, scene, true);
+    g._tex = tex;
     const ctx = tex.getContext();
-    ctx.clearRect(0, 0, 220, 110);
-    ctx.fillStyle = '#3a2a12';
-    ctx.font = 'bold 62px sans-serif';
+    ctx.clearRect(0, 0, 300, 110);
+    ctx.fillStyle = '#26313f';
+    ctx.font = 'bold 52px sans-serif';
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.fillText(name, 110, 60);
+    ctx.fillText(name, 150, 58);
     tex.hasAlpha = true; tex.update();
     const lm = new (B().StandardMaterial)('resLabMat' + name, scene);
     lm.diffuseTexture = tex; lm.opacityTexture = tex;
@@ -163,13 +193,19 @@ const CircuitScene = (() => {
     label.material = lm;
     label.parent = g;
 
-    // 단자
+    // 단자 (도선을 무는 집게 자리)
     const tm = mat('termMat' + name, '#20262f');
     [-1.7, 1.7].forEach((dx, i) => {
-      const t = B().MeshBuilder.CreateCylinder('term' + name + i, { height: 0.5, diameter: 0.45 }, scene);
-      t.position.set(x + dx, TABLE_Y + 0.9, -2.6);
+      const t = B().MeshBuilder.CreateCylinder('term' + name + i, { height: 0.62, diameter: 0.42 }, scene);
+      t.position.set(x + dx, TABLE_Y + 0.62, -2.6);
       t.material = tm;
       t.parent = g;
+      // 단자와 몸통을 잇는 짧은 다리
+      const leg = B().MeshBuilder.CreateCylinder('resLeg' + name + i, { height: 0.62, diameter: 0.13 }, scene);
+      leg.rotation.z = Math.PI / 2;
+      leg.position.set(x + dx * 0.66, TABLE_Y + 0.9, -2.6);
+      leg.material = mat('resLegMat' + name + i, '#b8c0c8', '#ffffff', 64);
+      leg.parent = g;
     });
 
     g._base = base;
@@ -232,31 +268,69 @@ const CircuitScene = (() => {
     wires = new (B().TransformNode)('wireGroup', scene);
     switchG = new (B().TransformNode)('switchGroup', scene);
 
-    const base = B().MeshBuilder.CreateBox('swBase', { width: 2.2, height: 0.4, depth: 1.4 }, scene);
-    base.position.set(0, TABLE_Y + 0.2, 6.4);
-    base.material = mat('swBaseMat', '#c8d2de');
+    // 칼날 스위치 — 나무 받침 · 두 접점 기둥 · 젖혀지는 칼날
+    const SW_X = -5.5, SW_Z = 3.6;          // 전지 ↔ 전류계 사이 도선 위
+    const base = B().MeshBuilder.CreateBox('swBase', { width: 3.0, height: 0.36, depth: 1.6 }, scene);
+    base.position.set(SW_X, TABLE_Y + 0.18, SW_Z);
+    base.material = mat('swBaseMat', '#8a6a45', '#d8c0a0', 32);
     base.parent = switchG;
 
-    const lever = B().MeshBuilder.CreateBox('swLever', { width: 1.8, height: 0.16, depth: 0.3 }, scene);
-    lever.position.set(0, TABLE_Y + 0.5, 6.4);
-    lever.material = mat('swLeverMat', '#d0453a');
-    lever.parent = switchG;
-    switchG._lever = lever;
+    const postM = mat('swPostMat', '#c8a020', '#fff0c0', 96);
+    [-1.05, 1.05].forEach((dx, i) => {
+      const post = B().MeshBuilder.CreateCylinder('swPost' + i, { height: 0.9, diameter: 0.34 }, scene);
+      post.position.set(SW_X + dx, TABLE_Y + 0.62, SW_Z);
+      post.material = postM;
+      post.parent = switchG;
+    });
+
+    // 칼날 : 왼쪽 기둥에 물려 회전한다 (열림 = 위로 들림)
+    const pivot = new (B().TransformNode)('swPivot', scene);
+    pivot.position.set(SW_X - 1.05, TABLE_Y + 0.9, SW_Z);
+    pivot.parent = switchG;
+    const blade = B().MeshBuilder.CreateBox('swBlade', { width: 2.3, height: 0.14, depth: 0.34 }, scene);
+    blade.position.set(1.15, 0, 0);
+    blade.material = mat('swBladeMat', '#c8ccd2', '#ffffff', 110);
+    blade.parent = pivot;
+    const knob = B().MeshBuilder.CreateSphere('swKnob', { diameter: 0.42 }, scene);
+    knob.position.set(2.35, 0.02, 0);
+    knob.material = mat('swKnobMat', '#d0453a', '#ffb0a0', 64);
+    knob.parent = pivot;
+    switchG._lever = pivot;
   }
 
-  /** 실물 배선을 굵은 선으로 잇는다 */
-  let wireLines = null;
+  /** 실물 배선 — 굵은 도선(원기둥)으로 잇고 전류가 흐르면 점이 따라 흐른다 */
+  let wireLines = null;       // 도선 묶음 (TransformNode)
+  let curDots = [];           // 전류 표시 점
+  let mainPath = [];          // 전류가 도는 주 경로 (전지 → … → 전지)
+
+  function wireSeg(a, b, parent, name, hex) {
+    const dx = b.x - a.x, dz = b.z - a.z;
+    const len = Math.hypot(dx, dz);
+    if (len < 1e-4) return null;
+    const w = B().MeshBuilder.CreateCylinder(name, { height: len, diameter: 0.16 }, scene);
+    w.position.set((a.x + b.x) / 2, a.y, (a.z + b.z) / 2);
+    w.rotation.x = Math.PI / 2;
+    w.rotation.y = Math.atan2(dx, dz);
+    w.material = mat(name + 'M', hex, '#f0c0b0', 90);
+    w.isPickable = false;
+    w.parent = parent;
+    return w;
+  }
+
   function drawWires() {
-    if (wireLines) { wireLines.dispose(); wireLines = null; }
+    if (wireLines) { wireLines.dispose(false, true); wireLines = null; }
+    curDots = [];
     if (!placed.wires) return;
 
     const y = TABLE_Y + 0.9;
     const V = (x, z) => new (B().Vector3)(x, y, z);
     const lines = [];
 
+    // 스위치가 놓인 자리(x = −6.55 ~ −4.45, z = 3.6)는 칼날이 잇는다
     if (state.mode === 'series') {
-      // 전지 → 전류계 → A → B → 전지 (한 줄)
-      lines.push([V(-2.6, 3.6), V(-8.4, 3.6), V(-8.4, 0.6), V(-6.6, 0.6)]);
+      // 전지 → [스위치] → 전류계 → A → B → 전지 (한 줄)
+      lines.push([V(-2.6, 3.6), V(-4.45, 3.6)]);
+      lines.push([V(-6.55, 3.6), V(-8.4, 3.6), V(-8.4, 0.6), V(-6.6, 0.6)]);
       lines.push([V(-6.6, 0.6), V(-6.6, -2.6), V(-5.1, -2.6)]);
       lines.push([V(-1.7, -2.6), V(1.7, -2.6)]);
       lines.push([V(5.1, -2.6), V(8.4, -2.6), V(8.4, 3.6), V(2.6, 3.6)]);
@@ -264,8 +338,9 @@ const CircuitScene = (() => {
       lines.push([V(-5.1, -2.6), V(-5.1, -5.0), V(6.6, -5.0), V(6.6, 0.6)]);
       lines.push([V(-1.7, -2.6), V(-1.7, -4.2), V(5.4, -4.2), V(5.4, 0.6), V(6.6, 0.6)]);
     } else {
-      // 전지 → 전류계 → 두 갈래(A, B) → 전지
-      lines.push([V(-2.6, 3.6), V(-8.4, 3.6), V(-8.4, 0.6), V(-6.6, 0.6)]);
+      // 전지 → [스위치] → 전류계 → 두 갈래(A, B) → 전지
+      lines.push([V(-2.6, 3.6), V(-4.45, 3.6)]);
+      lines.push([V(-6.55, 3.6), V(-8.4, 3.6), V(-8.4, 0.6), V(-6.6, 0.6)]);
       lines.push([V(-6.6, 0.6), V(-6.6, -2.6), V(-5.1, -2.6)]);
       lines.push([V(-6.6, -2.6), V(-6.6, -6.2), V(1.7, -6.2), V(1.7, -2.6)]);
       lines.push([V(-1.7, -2.6), V(-1.7, -7.4), V(8.4, -7.4), V(8.4, 3.6), V(2.6, 3.6)]);
@@ -275,9 +350,83 @@ const CircuitScene = (() => {
       lines.push([V(-1.7, -2.6), V(-1.7, -4.2), V(5.4, -4.2), V(5.4, 0.6), V(6.6, 0.6)]);
     }
 
-    wireLines = B().MeshBuilder.CreateLineSystem('wires', { lines }, scene);
-    wireLines.color = B().Color3.FromHexString(state.closed ? '#d0453a' : '#7c8794');
-    wireLines.isPickable = false;
+    // 주 경로(전류가 도는 길) — 저항을 지나는 구간은 부품 속으로 지나간다
+    mainPath = [];
+    const loopIdx = state.mode === 'series' ? [0, 1, 2, 3, 4] : [0, 1, 2, 4];
+    loopIdx.map((k) => lines[k]).filter(Boolean).forEach((run) => {
+      run.forEach((v) => {
+        const last = mainPath[mainPath.length - 1];
+        if (!last || Math.hypot(last.x - v.x, last.z - v.z) > 1e-3) mainPath.push(v);
+      });
+    });
+
+    wireLines = new (B().TransformNode)('wireGroupMesh', scene);
+    const hex = state.closed ? '#c0392b' : '#7c8794';
+    lines.forEach((run, ri) => {
+      for (let i = 0; i < run.length - 1; i++) {
+        wireSeg(run[i], run[i + 1], wireLines, `ciW${ri}_${i}`, hex);
+        // 꺾이는 자리에 이음매를 두어 끊겨 보이지 않게 한다
+        if (i > 0) {
+          const j = B().MeshBuilder.CreateSphere(`ciJ${ri}_${i}`, { diameter: 0.16 }, scene);
+          j.position.copyFrom(run[i]);
+          j.material = mat(`ciJ${ri}_${i}M`, hex, '#f0c0b0', 90);
+          j.isPickable = false;
+          j.parent = wireLines;
+        }
+      }
+    });
+
+    // 전류 표시 점 — 스위치를 닫았을 때만 보인다
+    for (let i = 0; i < 8; i++) {
+      const d = B().MeshBuilder.CreateSphere('ciDot' + i, { diameter: 0.26 }, scene);
+      const m = new (B().StandardMaterial)('ciDotM' + i, scene);
+      m.emissiveColor = B().Color3.FromHexString('#ffd84a');
+      m.diffuseColor = B().Color3.FromHexString('#ffd84a');
+      d.material = m;
+      d.isPickable = false;
+      d.parent = wireLines;
+      curDots.push({ m: d, u: i / 8 });
+    }
+    moveDots(0);
+  }
+
+  /** 주 경로 위 비율 u (0~1) 의 좌표 */
+  function pathPoint(u) {
+    if (mainPath.length < 2) return null;
+    let total = 0;
+    const segs = [];
+    for (let i = 0; i < mainPath.length - 1; i++) {
+      const a = mainPath[i], b = mainPath[i + 1];
+      const L = Math.hypot(b.x - a.x, b.z - a.z);
+      segs.push({ a, b, L });
+      total += L;
+    }
+    let d = ((u % 1) + 1) % 1 * total;
+    for (let i = 0; i < segs.length; i++) {
+      if (d <= segs[i].L) {
+        const t = segs[i].L ? d / segs[i].L : 0;
+        return new (B().Vector3)(
+          segs[i].a.x + (segs[i].b.x - segs[i].a.x) * t,
+          segs[i].a.y,
+          segs[i].a.z + (segs[i].b.z - segs[i].a.z) * t
+        );
+      }
+      d -= segs[i].L;
+    }
+    return mainPath[mainPath.length - 1];
+  }
+
+  function moveDots(dt) {
+    if (!curDots.length) return;
+    const r = solve();
+    const on = state.closed && placed.wires;
+    const v = on ? Math.min(0.42, 0.06 + r.It * 0.55) : 0;
+    curDots.forEach((d) => {
+      d.u = (d.u + v * dt) % 1;
+      const pt = pathPoint(d.u);
+      if (pt) d.m.position.copyFrom(pt);
+      d.m.setEnabled(on);
+    });
   }
 
   /* ── 배치 자리 ──────────────────────────────── */
@@ -342,13 +491,37 @@ const CircuitScene = (() => {
   function slotName(id) { return slots[id].name; }
 
   /* ══ 갱신 ═══════════════════════════════════ */
+  /** 저항기의 색띠와 이름표를 저항값에 맞춰 다시 칠한다 */
+  function paintResistor(g, name, ohm) {
+    if (!g || !g._bands) return;
+    const hexes = bandsOf(ohm);
+    g._bands.forEach((b, i) => {
+      b.material.diffuseColor = B().Color3.FromHexString(hexes[i]);
+    });
+    const tex = g._tex;
+    if (!tex) return;
+    const ctx = tex.getContext();
+    ctx.clearRect(0, 0, 300, 110);
+    ctx.fillStyle = '#26313f';
+    ctx.font = 'bold 52px sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(`${name} · ${ohm} Ω`, 150, 58);
+    tex.update();
+  }
+
+  /** 전류가 도선을 따라 흐르는 모습 */
+  function tick(dt) {
+    moveDots(dt);
+    return false;
+  }
+
   function update() {
     if (!scene) return;
     const r = solve();
 
-    // 저항값에 따라 색을 조금 달리해 크기 차이를 보이게 한다
-    if (resA._base) resA._base.scaling.x = 0.7 + state.rA / 60;
-    if (resB._base) resB._base.scaling.x = 0.7 + state.rB / 60;
+    // 저항값을 «색띠»와 이름표에 그대로 반영한다 (실제 부품과 같은 읽기 방식)
+    paintResistor(resA, 'A', state.rA);
+    paintResistor(resB, 'B', state.rB);
 
     if (placed.meters) {
       drawMeter(ammeter, r.It.toFixed(2), 'A', '전체 전류');
@@ -356,11 +529,8 @@ const CircuitScene = (() => {
         state.mode === 'series' ? '저항 A 전압' : '두 저항 전압');
     }
 
-    if (switchG._lever) {
-      switchG._lever.rotation.z = state.closed ? 0 : -0.55;
-      switchG._lever.material.diffuseColor =
-        B().Color3.FromHexString(state.closed ? '#2f9e6b' : '#d0453a');
-    }
+    // 칼날 스위치 — 닫으면 접점에 내려앉고, 열면 위로 젖혀진다
+    if (switchG._lever) switchG._lever.rotation.z = state.closed ? 0 : 0.62;
 
     drawWires();
   }
@@ -576,11 +746,42 @@ const CircuitScene = (() => {
     ];
   }
 
+
+  /* ══ 탐구 미션 ═══════════════════════════════
+     0 직렬 기록 · 1 병렬 기록 · 2 직렬에서 전류가 같음 · 3 병렬에서 전압이 같음
+     4 저항값을 바꿔 다시 확인                                             */
+  const mis = { rSeen: {} };
+  const recs = () => ((typeof Lab !== 'undefined' && Lab.getRecords) ? Lab.getRecords() : []);
+  const rows = (kind) => recs().filter((r) => String(r[0]) === kind);
+
+  function missionDone(i) {
+    if (state.closed) mis.rSeen[state.rA + '/' + state.rB] = true;
+    if (i === 0) return rows('직렬').length >= 3;
+    if (i === 1) return rows('병렬').length >= 3;
+    if (i === 2) {
+      // 직렬 : 저항 A · B 의 전류가 같다
+      const rs = rows('직렬');
+      const a = rs.find((r) => String(r[1]).indexOf('저항 A') === 0);
+      const b = rs.find((r) => String(r[1]).indexOf('저항 B') === 0);
+      return !!(a && b) && Math.abs(parseFloat(a[2]) - parseFloat(b[2])) < 0.002;
+    }
+    if (i === 3) {
+      // 병렬 : 저항 A · B 에 걸린 전압이 같다
+      const rs = rows('병렬');
+      const a = rs.find((r) => String(r[1]).indexOf('저항 A') === 0);
+      const b = rs.find((r) => String(r[1]).indexOf('저항 B') === 0);
+      return !!(a && b) && Math.abs(parseFloat(a[3]) - parseFloat(b[3])) < 0.02;
+    }
+    if (i === 4) return Object.keys(mis.rSeen).length >= 2;
+    return false;
+  }
+
   return {
+    missionDone,
     id: 'circuit',
     title: '저항의 직렬연결과 병렬연결 비교하기',
     guide, prepGuide, tools,
-    create, update, resetCamera,
+    create, update, tick, resetCamera,
     placeTool, resetTools, allPlaced, dropAt, slotName,
     controlsHTML, bindControls, readoutHTML,
     graphTitle, drawGraph, graphFootHTML,

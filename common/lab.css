@@ -518,3 +518,63 @@ i { font-family: 'Times New Roman', serif; font-size: 1.12em; }
   .modal-box h2 { font-size: 18px; }
   .modal-box p, .modal-box li { font-size: 13.5px; }
 }
+
+
+/* ══ 탐구 미션 · 학습 흐름 ══════════════════════════════
+   (예전에는 축전기 시뮬레이션에만 있던 것을 모든 시뮬레이션이 함께 쓴다) */
+
+/* 미션 달성 개수 */
+.steps-head .mn-cnt { color: var(--key); font-weight: 900; }
+.steps-head .mn-cnt.all { color: #2f9e6b; }
+/* 미션의 «목표» 한 줄 */
+.mn-goal {
+  display: block; margin-top: 3px;
+  font-size: 11.5px; font-weight: 700; color: #2f7fd6;
+  letter-spacing: -.2px;
+}
+.step.done .mn-goal { color: #2f9e6b; }
+
+/* 사이드바에 붙는 학습 흐름 버튼 (진단·확인·창의·보고서) */
+.sidebar .sb-flow {
+  display: flex; flex-direction: column; align-items: center; gap: 3px;
+  position: relative; padding: 8px 0;
+}
+.sidebar .sb-flow svg { width: 28px; height: 28px; }
+.sidebar .sb-flow .sb-label {
+  font-size: 10.5px; font-weight: 700; color: #8a97a8; letter-spacing: -.3px;
+}
+.sb-done {
+  position: absolute; top: 4px; right: 12px;
+  width: 14px; height: 14px; line-height: 14px; border-radius: 50%;
+  background: #2f9e6b; color: #fff; font-size: 9px; text-align: center; font-weight: 800;
+}
+
+/* 학습 패널 안 교과서 그림 */
+.fx-figs { display: flex; gap: 10px; flex-wrap: wrap; margin: 10px 0; }
+.fx-fig {
+  margin: 0; flex: 1 1 45%; min-width: 150px; max-width: 320px;
+  border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: #fff;
+}
+.fx-fig img { width: 100%; display: block; }
+.fx-fig figcaption { font-size: 11.5px; color: #62718a; padding: 5px 9px; background: #f6f9fd; }
+
+/* 나의 탐구 현황 진행바 */
+.wl { display: flex; align-items: center; gap: 10px; margin: 8px 0; font-size: 13px; }
+.wl-t { width: 118px; flex: none; color: #41566f; font-weight: 600; }
+.wl-bar { flex: 1; height: 11px; background: #e8eef6; border-radius: 999px; overflow: hidden; }
+.wl-bar i { display: block; height: 100%; background: var(--grad); border-radius: 999px; transition: width .3s; }
+.wl-v { flex: none; min-width: 78px; text-align: right; color: #62718a; font-variant-numeric: tabular-nums; font-size: 12px; }
+
+/* 서술형·창의 답 입력칸 */
+.fx-ta {
+  width: 100%; min-height: 110px; border: 1px solid var(--line); border-radius: 9px;
+  padding: 10px 12px; font-size: 14px; font-family: inherit; resize: vertical;
+}
+
+@media (max-width: 820px) {
+  .sidebar .sb-flow svg { width: 24px; height: 24px; }
+  .sidebar .sb-flow .sb-label { font-size: 9.5px; }
+  .sb-done { right: 3px; }
+  .wl-t { width: 92px; font-size: 12px; }
+  .fx-fig { min-width: 120px; }
+}

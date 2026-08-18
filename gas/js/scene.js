@@ -557,7 +557,27 @@ const GasScene = (() => {
       Q.toFixed(1), dU.toFixed(1), W.toFixed(1)]];
   }
 
+
+  /* ══ 탐구 미션 ═══════════════════════════════
+     0~2 네 과정 살펴보기 · 3 단열 과정에서 Q = 0 확인 · 4 기록 4줄        */
+  const mis = { proc: {}, base: {} };
+  const recs = () => ((typeof Lab !== 'undefined' && Lab.getRecords) ? Lab.getRecords() : []);
+
+  function missionDone(i) {
+    // 그 과정에서 «부피나 온도를 실제로 바꿔 본» 경우에만 관찰한 것으로 본다
+    const b = mis.base[state.process];
+    if (!b) mis.base[state.process] = { V: state.V, T: state.T };
+    else if (Math.abs(state.V - b.V) > 0.4 || Math.abs(state.T - b.T) > 8) mis.proc[state.process] = true;
+    if (i === 0) return !!mis.proc.isothermal;
+    if (i === 1) return !!mis.proc.isobaric;
+    if (i === 2) return !!mis.proc.isochoric;
+    if (i === 3) return !!mis.proc.adiabatic;
+    if (i === 4) return new Set(recs().map((r) => String(r[0]))).size >= 3 && recs().length >= 4;
+    return false;
+  }
+
   return {
+    missionDone,
     id: 'gas',
     title: '기체 실험실 — 센서로 재는 P · V · T',
     guide, prepGuide, tools,

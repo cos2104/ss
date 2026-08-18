@@ -530,7 +530,29 @@ const EFieldScene = (() => {
     ];
   }
 
+
+  /* ══ 탐구 미션 ═══════════════════════════════
+     0 시험 전하 옮기기 · 1 같은 부호로 바꾸기 · 2 거리 2가지 기록
+     3 전하량 2가지 기록 · 4 기록 4줄                                      */
+  const mis = { moved: false, same: false, x0: null, z0: null };
+  const recs = () => ((typeof Lab !== 'undefined' && Lab.getRecords) ? Lab.getRecords() : []);
+  const uniq = (col) => new Set(recs().map((r) => String(r[col]))).size;
+
+  function missionDone(i) {
+    if (mis.x0 === null) { mis.x0 = state.testX; mis.z0 = state.testZ; }
+    if (Math.abs(state.testX - mis.x0) > 0.05 || Math.abs(state.testZ - mis.z0) > 0.05) mis.moved = true;
+    if (state.qA * state.qB > 0) mis.same = true;
+
+    if (i === 0) return mis.moved;
+    if (i === 1) return mis.same;
+    if (i === 2) return uniq(2) >= 2;      // 두 전하 사이 거리
+    if (i === 3) return uniq(0) >= 2;      // 전하 A 의 전하량
+    if (i === 4) return recs().length >= 4;
+    return false;
+  }
+
   return {
+    missionDone,
     id: 'efield',
     noPrep: true,   // 모의실험형 — 배치 없이 바로 시작
     title: '전기력과 전기장 관찰하기',

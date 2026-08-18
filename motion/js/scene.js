@@ -502,7 +502,38 @@ const MotionScene = (() => {
     ];
   }
 
+
+  /* ══ 탐구 미션 ═══════════════════════════════
+     0 수레 출발 · 1 힘 2배 → 가속도 2배 · 2 질량 2배 → 가속도 절반
+     3 기록 4줄 · 4 가속도 4 m/s² 이상 만들기                             */
+  const mis = { ran: false };
+  const recs = () => ((typeof Lab !== 'undefined' && Lab.getRecords) ? Lab.getRecords() : []);
+  const num = (v) => parseFloat(v);
+  /** 기록 중 «한쪽 값은 같고 다른 값이 배수»인 짝을 찾는다 */
+  function pair(sameCol, ratioCol, ratio) {
+    const rs = recs();
+    for (let a = 0; a < rs.length; a++) {
+      for (let b = 0; b < rs.length; b++) {
+        if (a === b) continue;
+        if (Math.abs(num(rs[a][sameCol]) - num(rs[b][sameCol])) > 1e-6) continue;
+        if (Math.abs(num(rs[b][ratioCol]) - num(rs[a][ratioCol]) * ratio) < 0.06) return [rs[a], rs[b]];
+      }
+    }
+    return null;
+  }
+
+  function missionDone(i) {
+    if (state.running) mis.ran = true;
+    if (i === 0) return mis.ran;
+    if (i === 1) return !!pair(1, 0, 2);            // 질량 같고 힘 2배
+    if (i === 2) return !!pair(0, 1, 2);            // 힘 같고 질량 2배
+    if (i === 3) return recs().length >= 4;
+    if (i === 4) return accel() >= 4;
+    return false;
+  }
+
   return {
+    missionDone,
     id: 'motion',
     title: '힘, 질량, 가속도 사이의 관계 알아보기',
     guide, prepGuide, tools,

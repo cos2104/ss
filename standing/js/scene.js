@@ -92,6 +92,7 @@ const StandingScene = (() => {
     buildInstrument();
     buildResonance();
     buildPlaceholders();
+    buildMarks();
 
     // 교과서 그림 액자 (배경 소품)
     LabUI.addPoster(scene, '../assets/thumbs/standing.jpg', { x: -7.5, y: 0, z: 5, ry: 0.3 });
@@ -197,6 +198,78 @@ const StandingScene = (() => {
       ctx.fillText('공명!', 270, 138);
     }
     meterTex.update();
+  }
+
+  /* ── 마디 · 배 이름표 ────────────────────────
+     정상파에서 «어디가 마디이고 어디가 배인지» 를 눈으로 바로 확인하도록
+     현·관 위에 작은 표지를 띄운다. (교과서 그림 III-21~23 의 N·A 표기) */
+  const MARK_MAX = 14;
+  let marks = [];
+  function buildMarks() {
+    for (let i = 0; i < MARK_MAX; i++) {
+      const g = new (B().TransformNode)('mk' + i, scene);
+      const dot = B().MeshBuilder.CreateSphere('mkD' + i, { diameter: 0.22 }, scene);
+      const dm = new (B().StandardMaterial)('mkDM' + i, scene);
+      dm.emissiveColor = new (B().Color3)(1, 1, 1);
+      dm.specularColor = new (B().Color3)(0, 0, 0);
+      dot.material = dm;
+      dot.isPickable = false;
+      dot.parent = g;
+
+      const lab = B().MeshBuilder.CreatePlane('mkL' + i, { width: 0.9, height: 0.45 }, scene);
+      lab.position.y = 0.52;
+      lab.billboardMode = B().Mesh.BILLBOARDMODE_Y;
+      const tex = new (B().DynamicTexture)('mkT' + i, { width: 128, height: 64 }, scene, true);
+      const lm = new (B().StandardMaterial)('mkLM' + i, scene);
+      lm.diffuseTexture = tex; lm.opacityTexture = tex; lm.emissiveTexture = tex;
+      lm.emissiveColor = new (B().Color3)(1, 1, 1);
+      lm.specularColor = new (B().Color3)(0, 0, 0);
+      lm.backFaceCulling = false;
+      lab.material = lm;
+      lab.isPickable = false;
+      lab.parent = g;
+      g.setEnabled(false);
+      marks.push({ g, dot, tex });
+    }
+  }
+
+  /** 표지 하나를 그린다 */
+  function paintMark(m, isNode) {
+    const ctx = m.tex.getContext();
+    ctx.clearRect(0, 0, 128, 64);
+    ctx.fillStyle = isNode ? '#d0453a' : '#2f6ad0';
+    ctx.font = 'bold 40px "Noto Sans KR", sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(isNode ? '마디' : '배', 64, 34);
+    m.tex.hasAlpha = true; m.tex.update();
+    m.dot.material.emissiveColor = B().Color3.FromHexString(isNode ? '#d0453a' : '#2f6ad0');
+  }
+
+  /** 현·관의 종류와 배진동 수에 맞춰 마디·배 위치를 다시 배치한다 */
+  function layoutMarks() {
+    if (!marks.length) return;
+    marks.forEach((m) => m.g.setEnabled(false));
+    if (state.mode !== 'inst' || !allPlaced()) return;
+
+    const Lu = state.L * SM;
+    const n = state.harmonic;
+    const list = [];                       // { u, node }
+    if (state.inst === 'string') {
+      for (let k = 0; k <= n; k++) list.push({ u: k / n, node: true });
+      for (let k = 0; k < n; k++) list.push({ u: (k + 0.5) / n, node: false });
+    } else if (state.inst === 'open') {
+      for (let k = 0; k <= n; k++) list.push({ u: k / n, node: false });
+      for (let k = 0; k < n; k++) list.push({ u: (k + 0.5) / n, node: true });
+    } else {                                // 닫힌 관 : x=0 마디, x=L 배 (n 은 홀수)
+      for (let k = 0; k * 2 <= n; k++) list.push({ u: 2 * k / n, node: true });
+      for (let k = 0; 2 * k + 1 <= n; k++) list.push({ u: (2 * k + 1) / n, node: false });
+    }
+    list.slice(0, MARK_MAX).forEach((it, i) => {
+      const m = marks[i];
+      m.g.position.set(-Lu / 2 + it.u * Lu, 2.75, 0);
+      paintMark(m, it.node);
+      m.g.setEnabled(true);
+    });
   }
 
   /* ── 배치 자리 ──────────────────────────────── */
@@ -354,6 +427,7 @@ const StandingScene = (() => {
   function update() {
     if (!sim) reset();
     else layout();
+    layoutMarks();
   }
 
   function resetCamera() {
@@ -601,7 +675,30 @@ const StandingScene = (() => {
       lam ? (F_RES * lam).toFixed(1) : '—']];
   }
 
+
+  /* ══ 탐구 미션 ═══════════════════════════════
+     0 현의 기본 진동 · 1 2배 진동 이상 · 2 열린 관·닫힌 관 비교
+     3 기주 공명 지점 2곳 찾기 · 4 음속 구하기                             */
+  const mis = { inst: {}, harm: 0, L0: null, Lchanged: false };
+  const recs = () => ((typeof Lab !== 'undefined' && Lab.getRecords) ? Lab.getRecords() : []);
+
+  function missionDone(i) {
+    if (state.mode === 'inst') {
+      mis.inst[state.inst] = true;
+      mis.harm = Math.max(mis.harm, state.harmonic);
+      if (mis.L0 === null) mis.L0 = state.L;
+      else if (Math.abs(state.L - mis.L0) > 0.05) mis.Lchanged = true;
+    }
+    if (i === 0) return !!mis.inst.string && mis.Lchanged;
+    if (i === 1) return mis.harm >= 2;
+    if (i === 2) return !!mis.inst.open && !!mis.inst.closed;
+    if (i === 3) return state.mode === 'res' && sim && sim.found && sim.found.length >= 2;
+    if (i === 4) return recs().some((r) => String(r[0]) === '공명' && r[7] && r[7] !== '—');
+    return false;
+  }
+
   return {
+    missionDone,
     id: 'standing',
     title: '정상파와 악기 — 기주 공명으로 음속 재기',
     guide, prepGuide, tools,

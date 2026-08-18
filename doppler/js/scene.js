@@ -732,7 +732,31 @@ const DopplerScene = (() => {
       ok ? `🎯 정답 (실제 ${sim.carV})` : `실제 ${sim.carV} m/s`]];
   }
 
+
+  /* ══ 탐구 미션 ═══════════════════════════════
+     0 이야기 재생 · 1 음원 이동 실험 · 2 관찰자 이동 실험 · 3 접근·후퇴 비교
+     4 스피드건 맞히기                                                     */
+  const mis = { story: false, who: {}, dir: {}, gunOK: false };
+  const recs = () => ((typeof Lab !== 'undefined' && Lab.getRecords) ? Lab.getRecords() : []);
+
+  function missionDone(i) {
+    if (state.mode === 'story' && state.running) mis.story = true;
+    if (state.mode === 'lab' && state.running) {
+      mis.who[state.labWho] = true;
+      mis.dir[state.labDir] = true;
+    }
+    if (state.mode === 'gun' && sim && sim.revealed && Math.abs(state.guess - sim.carV) < 1) mis.gunOK = true;
+
+    if (i === 0) return mis.story;
+    if (i === 1) return !!mis.who.source;
+    if (i === 2) return !!mis.who.observer;
+    if (i === 3) return Object.keys(mis.dir).length >= 2;
+    if (i === 4) return mis.gunOK;
+    return false;
+  }
+
   return {
+    missionDone,
     id: 'doppler',
     title: '구급차가 지나갈 때 — 도플러 효과 이야기',
     guide, prepGuide, tools,

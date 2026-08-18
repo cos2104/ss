@@ -19,7 +19,7 @@ const AmpereScene = (() => {
   const state = {
     current: 5,        // A
     dir: 1,            // +1 : 화면 오른쪽(+x), −1 : 왼쪽
-    on: true,
+    on: false,       // 처음에는 스위치가 열려 있다 (나침반은 북쪽)
     showRings: true,
   };
 
@@ -486,7 +486,35 @@ const AmpereScene = (() => {
     ];
   }
 
+
+  /* ══ 탐구 미션 ═══════════════════════════════
+     0 전류를 흘려 나침반 돌리기 · 1 방향 반대로 · 2 전류 2배 기록
+     3 거리에 따른 세기 기록 · 4 전류를 끄고 북쪽 확인                     */
+  const mis = { on: false, dirs: {}, offAfterOn: false };
+  const recs = () => ((typeof Lab !== 'undefined' && Lab.getRecords) ? Lab.getRecords() : []);
+
+  function missionDone(i) {
+    if (state.on && state.current > 0) { mis.on = true; mis.dirs[state.dir] = true; }
+    else if (mis.on) mis.offAfterOn = true;
+
+    if (i === 0) return mis.on;
+    if (i === 1) return Object.keys(mis.dirs).length >= 2;
+    if (i === 2) {
+      const rs = recs().filter((r) => parseFloat(r[0]) > 0);
+      for (let a = 0; a < rs.length; a++) {
+        for (let b = 0; b < rs.length; b++) {
+          if (a !== b && Math.abs(parseFloat(rs[b][0]) - 2 * parseFloat(rs[a][0])) < 0.06) return true;
+        }
+      }
+      return false;
+    }
+    if (i === 3) return recs().length >= 2;
+    if (i === 4) return mis.offAfterOn;
+    return false;
+  }
+
   return {
+    missionDone,
     id: 'ampere',
     title: '직선 전류에 의한 자기장 관찰하기',
     guide, prepGuide, tools,

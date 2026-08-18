@@ -746,7 +746,32 @@ const CircularScene = (() => {
       sim.measured ? `10회전 = ${(sim.measured * 10).toFixed(2)} s` : '—']];
   }
 
+
+  /* ══ 탐구 미션 ═══════════════════════════════
+     0 게임 던지기 · 1 게임 성공 · 2 실험 모드 측정 · 3 구심력 2가지 비교
+     4 기록 4줄                                                            */
+  const mis = { threw: false, win: false, rings: {}, measured: false };
+  const recs = () => ((typeof Lab !== 'undefined' && Lab.getRecords) ? Lab.getRecords() : []);
+
+  function missionDone(i) {
+    if (state.mode === 'game' && sim && sim.phase === 'land') {
+      mis.threw = true;
+      if (sim.dist !== undefined && sim.dist < 1.5) mis.win = true;
+    }
+    if (state.mode === 'lab' && sim && sim.measured) {
+      mis.measured = true;
+      mis.rings[state.rings] = true;
+    }
+    if (i === 0) return mis.threw;
+    if (i === 1) return mis.win;
+    if (i === 2) return mis.measured;
+    if (i === 3) return Object.keys(mis.rings).length >= 2;
+    if (i === 4) return recs().length >= 4;
+    return false;
+  }
+
   return {
+    missionDone,
     id: 'circular',
     title: '원운동과 구심력 — 해머던지기',
     guide, prepGuide, tools,

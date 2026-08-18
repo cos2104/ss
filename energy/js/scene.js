@@ -675,7 +675,34 @@ const EnergyScene = (() => {
     ];
   }
 
+
+  /* ══ 탐구 미션 ═══════════════════════════════
+     0 낙하 끝까지 · 1 총 에너지 일정 확인(기록 2줄) · 2 공기 저항 손실
+     3 진자 모드 실행 · 4 높이 2배 비교                                    */
+  const mis = { fell: false, pend: false, dragSeen: false, h0seen: {} };
+  const recs = () => ((typeof Lab !== 'undefined' && Lab.getRecords) ? Lab.getRecords() : []);
+
+  function missionDone(i) {
+    if (state.mode === 'fall' && state.running && curH() <= 0.06) mis.fell = true;
+    if (state.mode === 'pend' && state.running) mis.pend = true;
+    if (state.drag && state.running) mis.dragSeen = true;
+    if (state.running) mis.h0seen[state.mode === 'fall' ? state.h0.toFixed(1) : 'p' + state.theta0] = true;
+
+    if (i === 0) return mis.fell;
+    if (i === 1) {
+      const rs = recs().filter((r) => r.length >= 5);
+      if (rs.length < 2) return false;
+      const E = rs.map((r) => parseFloat(r[4]));
+      return Math.max.apply(null, E) - Math.min.apply(null, E) < 0.02;
+    }
+    if (i === 2) return mis.dragSeen;
+    if (i === 3) return mis.pend;
+    if (i === 4) return Object.keys(mis.h0seen).length >= 3;
+    return false;
+  }
+
   return {
+    missionDone,
     id: 'energy',
     title: '역학적 에너지 보존 관찰하기',
     guide, prepGuide, tools,

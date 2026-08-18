@@ -437,7 +437,28 @@ const MatterwaveScene = (() => {
       state.observe ? '두 줄 (입자성)' : sim.count < 100 ? '무작위 점 (아직)' : '간섭무늬 (파동성)']];
   }
 
+
+  /* ══ 탐구 미션 ═══════════════════════════════
+     0 전자 100개 · 1 간섭무늬 (1000개) · 2 관측 장치 켜기 · 3 파장 바꿔 간격 비교
+     4 기록 3줄                                                            */
+  const mis = { max: 0, observed: false, lams: {} };
+  const recs = () => ((typeof Lab !== 'undefined' && Lab.getRecords) ? Lab.getRecords() : []);
+
+  function missionDone(i) {
+    if (sim) mis.max = Math.max(mis.max, sim.count || 0);
+    if (state.observe && sim && sim.count > 50) mis.observed = true;
+    if (!state.observe && sim && sim.count > 300) mis.lams[state.lambda.toFixed(1)] = true;
+
+    if (i === 0) return mis.max >= 100;
+    if (i === 1) return !state.observe && mis.max >= 1000;
+    if (i === 2) return mis.observed;
+    if (i === 3) return Object.keys(mis.lams).length >= 2;
+    if (i === 4) return recs().length >= 3;
+    return false;
+  }
+
   return {
+    missionDone,
     id: 'matterwave',
     noPrep: true,   // 모의실험형 — 배치 없이 바로 시작
     title: '전자를 한 개씩 — 이중 슬릿 모의실험',

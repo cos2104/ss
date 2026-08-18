@@ -19,3 +19,7 @@ shots/
 # Windows
 desktop.ini
 Thumbs.db
+
+# 개발용 점검 도구
+_dev/
+digest.txt
