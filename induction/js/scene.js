@@ -105,6 +105,7 @@ const InductionScene = (() => {
     // 교과서 그림 액자 (배경 소품)
     LabUI.addPoster(scene, '../assets/thumbs/induction.jpg', { x: -13, y: 0, z: 5.5, ry: 0.45 });
 
+    setupPointer(canvas);
     resetTools();
     return scene;
   }
@@ -366,6 +367,37 @@ const InductionScene = (() => {
     meterTex.update();
   }
 
+  /* ══ 자석을 직접 끌기 ════════════════════════
+     자석을 손으로 잡아 코일 속으로 넣었다 뺐다 할 수 있다.
+     끄는 «빠르기» 가 그대로 유도 기전력에 반영된다.               */
+  let dragMag = false;
+  let onChangeCb = null;
+
+  function setupPointer(canvas) {
+    scene.onPointerObservable.add((pi) => {
+      const T = B().PointerEventTypes;
+      if (pi.type === T.POINTERDOWN) {
+        const m = pi.pickInfo && pi.pickInfo.pickedMesh;
+        if (!m || !/^(magN|magS|magGrip)/.test(m.name) || !placed.magnet) return;
+        dragMag = true;
+        state.auto = false;
+        camera.detachControl();
+      } else if (pi.type === T.POINTERMOVE && dragMag) {
+        const ray = scene.createPickingRay(scene.pointerX, scene.pointerY, null, camera);
+        const plane = B().Plane.FromPositionAndNormal(
+          new (B().Vector3)(0, AXIS_Y, 0), new (B().Vector3)(0, 0, 1));
+        const d = ray.intersectsPlane(plane);
+        if (d === null) return;
+        const x = ray.origin.add(ray.direction.scale(d)).x;
+        state.x = Math.max(-X_LIMIT, Math.min(X_LIMIT, x));
+        if (onChangeCb) onChangeCb();
+      } else if (pi.type === T.POINTERUP && dragMag) {
+        dragMag = false;
+        camera.attachControl(canvas, true);
+      }
+    });
+  }
+
   /* ── 배치 자리 ──────────────────────────────── */
   const holders = {};
   function buildPlaceholders() {
@@ -509,6 +541,7 @@ const InductionScene = (() => {
   }
 
   function bindControls(root, onChange) {
+    onChangeCb = onChange;   // 3D 에서 끌어도 측정값이 갱신되도록
     LabUI.bindSlider(root, 'turns', state, 'turns', (v) => `${v} 회`, onChange);
     LabUI.bindSlider(root, 'strength', state, 'strength', (v) => `${v.toFixed(1)} 배`, onChange);
     LabUI.bindSlider(root, 'speed', state, 'speed', (v) => `${v.toFixed(1)} cm/s`, onChange);

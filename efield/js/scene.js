@@ -116,6 +116,7 @@ const EFieldScene = (() => {
     // 교과서 그림 액자 (배경 소품)
     LabUI.addPoster(scene, '../assets/thumbs/efield.jpg', { x: -9, y: 0, z: 6, ry: 0.3 });
 
+    setupPointer(canvas);
     resetTools();
     return scene;
   }
@@ -270,6 +271,40 @@ const EFieldScene = (() => {
     forceLine.isPickable = false;
   }
 
+  /* ══ 시험 전하를 직접 끌기 ═══════════════════
+     시험 전하를 마우스로 끌면 그 자리에서 받는 전기력을 바로 볼 수 있다. */
+  let dragTest = false;
+  let onChangeCb = null;
+
+  function setupPointer(canvas) {
+    scene.onPointerObservable.add((pi) => {
+      const T = B().PointerEventTypes;
+      if (pi.type === T.POINTERDOWN) {
+        const m = pi.pickInfo && pi.pickInfo.pickedMesh;
+        if (!m || !/^testS/.test(m.name) || !placed.test) return;
+        dragTest = true;
+        camera.detachControl();
+      } else if (pi.type === T.POINTERMOVE && dragTest) {
+        const ray = scene.createPickingRay(scene.pointerX, scene.pointerY, null, camera);
+        const plane = B().Plane.FromPositionAndNormal(
+          new (B().Vector3)(0, PLANE_Y, 0), new (B().Vector3)(0, 1, 0));
+        const d = ray.intersectsPlane(plane);
+        if (d === null) return;
+        const pt = ray.origin.add(ray.direction.scale(d));
+        const nx = Math.max(-2.4, Math.min(2.4, +(pt.x / U).toFixed(2)));
+        const nz = Math.max(-2.4, Math.min(2.4, +(pt.z / U).toFixed(2)));
+        if (nx !== state.testX || nz !== state.testZ) {
+          state.testX = nx; state.testZ = nz;
+          update();
+          if (onChangeCb) onChangeCb();
+        }
+      } else if (pi.type === T.POINTERUP && dragTest) {
+        dragTest = false;
+        camera.attachControl(canvas, true);
+      }
+    });
+  }
+
   /* ── 배치 자리 ──────────────────────────────── */
   const holders = {};
   function buildPlaceholders() {
@@ -373,6 +408,7 @@ const EFieldScene = (() => {
   }
 
   function bindControls(root, onChange) {
+    onChangeCb = onChange;   // 3D 에서 끌어도 측정값이 갱신되도록
     const f1 = (v) => `${v > 0 ? '+' : ''}${v.toFixed(1)} μC`;
     LabUI.bindSlider(root, 'qA', state, 'qA', f1, onChange);
     LabUI.bindSlider(root, 'qB', state, 'qB', f1, onChange);

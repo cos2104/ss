@@ -17,9 +17,12 @@ const MotionScene = (() => {
   let cart, track, spring, springLabel, springTex, marks = [];
   let placed = {};
 
+  const G = 9.8;
   const state = {
-    force: 1.0,     // N
-    mass: 0.5,      // kg
+    drive: 'spring', // 'spring' 용수철저울로 일정한 힘 | 'pulley' 도르래에 추를 매달기
+    force: 1.0,      // N (용수철저울 방식에서 당기는 힘)
+    mass: 0.5,       // kg (수레)
+    hang: 0.1,       // kg (도르래에 매단 추)
     running: false,
   };
 
@@ -39,9 +42,21 @@ const MotionScene = (() => {
     spring: { x: 1.2, name: '용수철저울' },
   };
 
-  /* ══ 물리 ═══════════════════════════════════ */
-  /** 뉴턴 제2법칙 : a = F/m */
-  function accel() { return state.force / state.mass; }
+  /* ══ 물리 ═══════════════════════════════════
+     · 용수철저울 : 일정한 힘 F 로 끈다 → a = F / m
+     · 도르래·추  : 수레와 추가 «함께» 가속된다
+                    a = m_추 g / (m_수레 + m_추),  실의 장력 T = m_수레 a
+       (추의 무게 m_추 g 와 장력 T 는 서로 다르다 — 흔한 오개념)         */
+  function accel() {
+    if (state.drive === 'pulley') return (state.hang * G) / (state.mass + state.hang);
+    return state.force / state.mass;
+  }
+  /** 실이 수레를 실제로 당기는 힘 */
+  function pullForce() {
+    return state.drive === 'pulley' ? state.mass * accel() : state.force;
+  }
+  /** 매단 추의 무게 */
+  const hangWeight = () => state.hang * G;
 
   /* ══ 장면 ═══════════════════════════════════ */
   function create(engine, canvas) {
@@ -69,6 +84,9 @@ const MotionScene = (() => {
     buildTrack();
     buildCart();
     buildSpring();
+    buildPulley();
+    buildButtons();
+    setupPointer();
     buildPlaceholders();
 
     // 교과서 그림 액자 (배경 소품)
@@ -223,6 +241,132 @@ const MotionScene = (() => {
     marks.push(s);
   }
 
+  /* ══ 도르래와 매단 추 ════════════════════════ */
+  let pulleyG = null, hangG = null, ropeH = null, ropeV = null;
+
+  function buildPulley() {
+    pulleyG = new (B().TransformNode)('pulleyGroup', scene);
+    const px = (X0 + TRACK_L) * M + 0.9;          // 트랙 끝(책상 모서리)
+    // 기둥과 도르래 바퀴
+    const post = B().MeshBuilder.CreateBox('puPost', { width: 0.35, height: 3.8, depth: 0.35 }, scene);
+    post.position.set(px, TABLE_Y + 1.9, 0);
+    post.material = mat('puPostMat', '#4a5462');
+    post.parent = pulleyG;
+    const wheel = B().MeshBuilder.CreateCylinder('puWheel', { height: 0.22, diameter: 1.1, tessellation: 24 }, scene);
+    wheel.rotation.x = Math.PI / 2;
+    wheel.position.set(px, TABLE_Y + 3.85, 0);
+    wheel.material = mat('puWheelMat', '#c8a020', '#fff0c0', 96);
+    wheel.parent = pulleyG;
+    const hub = B().MeshBuilder.CreateCylinder('puHub', { height: 0.3, diameter: 0.3 }, scene);
+    hub.rotation.x = Math.PI / 2;
+    hub.position.set(px, TABLE_Y + 3.85, 0);
+    hub.material = mat('puHubMat', '#2b323c');
+    hub.parent = pulleyG;
+    pulleyG._x = px;
+
+    // 수레 → 도르래 (수평 실) / 도르래 → 추 (연직 실)
+    ropeH = B().MeshBuilder.CreateCylinder('puRopeH', { height: 1, diameter: 0.07 }, scene);
+    ropeH.rotation.z = Math.PI / 2;
+    ropeH.material = mat('puRopeMat', '#2b323c');
+    ropeH.parent = pulleyG;
+    ropeV = B().MeshBuilder.CreateCylinder('puRopeV', { height: 1, diameter: 0.07 }, scene);
+    ropeV.material = ropeH.material;
+    ropeV.parent = pulleyG;
+
+    // 매단 추 (여러 개를 쌓아 질량을 나타낸다)
+    hangG = new (B().TransformNode)('hangGroup', scene);
+    hangG.parent = pulleyG;
+    for (let i = 0; i < 5; i++) {
+      const w = B().MeshBuilder.CreateCylinder('hangW' + i, { height: 0.34, diameter: 0.7, tessellation: 18 }, scene);
+      w.material = mat('hangWM' + i, '#8e97a4', '#e4e9ef', 64);
+      w.parent = hangG;
+      hangG['_w' + i] = w;
+    }
+  }
+
+  /* ══ 화면에서 직접 조작 ═══════════════════════
+     · 수레 위 ＋/－ : 수레의 질량(추)을 늘리고 줄인다
+     · 매단 추 ＋/－ : 당기는 힘(용수철저울) 또는 매단 추를 늘리고 줄인다
+     · 수레를 끌면 출발 위치로 되돌릴 수 있다                        */
+  let btns = {};
+  let drag = null;
+  let onChangeCb = null;
+
+  function makeBtn(key, kind) {
+    const name = 'btn' + kind + key;
+    const pl = B().MeshBuilder.CreatePlane(name, { width: 0.85, height: 0.85 }, scene);
+    const tex = new (B().DynamicTexture)(name + 'T', { width: 96, height: 96 }, scene, true);
+    const c = tex.getContext();
+    c.clearRect(0, 0, 96, 96);
+    c.fillStyle = kind === 'Add' ? '#2f6ad0' : '#8e9bad';
+    c.beginPath(); c.arc(48, 48, 42, 0, 7); c.fill();
+    c.strokeStyle = '#fff'; c.lineWidth = 9; c.lineCap = 'round';
+    c.beginPath(); c.moveTo(28, 48); c.lineTo(68, 48); c.stroke();
+    if (kind === 'Add') { c.beginPath(); c.moveTo(48, 28); c.lineTo(48, 68); c.stroke(); }
+    tex.hasAlpha = true; tex.update();
+    const m = new (B().StandardMaterial)(name + 'M', scene);
+    m.diffuseTexture = tex; m.opacityTexture = tex; m.emissiveTexture = tex;
+    m.emissiveColor = new (B().Color3)(1, 1, 1);
+    m.specularColor = new (B().Color3)(0, 0, 0);
+    m.backFaceCulling = false;
+    pl.material = m;
+    return pl;
+  }
+
+  function buildButtons() {
+    ['Mass', 'Force'].forEach((k) => {
+      btns[k] = { add: makeBtn(k, 'Add'), sub: makeBtn(k, 'Sub') };
+    });
+  }
+
+  function layoutButtons() {
+    const on = allPlaced();
+    const cx = sim ? sim.x * M : X0 * M;
+    if (btns.Mass) {
+      btns.Mass.add.position.set(cx + 0.62, TABLE_Y + 2.3, -0.9);
+      btns.Mass.sub.position.set(cx - 0.62, TABLE_Y + 2.3, -0.9);
+      btns.Mass.add.setEnabled(on); btns.Mass.sub.setEnabled(on);
+    }
+    if (btns.Force) {
+      const pulley = state.drive === 'pulley';
+      const fx = pulley ? (pulleyG ? pulleyG._x + 0.55 : 0) : cx + 2.1;
+      const fy = pulley ? TABLE_Y + 1.55 : TABLE_Y + 2.0;
+      btns.Force.add.position.set(fx + 1.15, fy, -0.9);
+      btns.Force.sub.position.set(fx - 1.15, fy, -0.9);
+      btns.Force.add.setEnabled(on); btns.Force.sub.setEnabled(on);
+    }
+  }
+
+  function bump(kind, d) {
+    if (kind === 'Mass') {
+      state.mass = Math.max(0.5, Math.min(2.0, +(state.mass + d * 0.5).toFixed(1)));
+    } else if (state.drive === 'pulley') {
+      state.hang = Math.max(0.05, Math.min(0.5, +(state.hang + d * 0.05).toFixed(2)));
+    } else {
+      state.force = Math.max(0.5, Math.min(4.0, +(state.force + d * 0.5).toFixed(1)));
+    }
+    reset();
+    if (onChangeCb) onChangeCb();
+  }
+
+  function setupPointer() {
+    scene.onPointerObservable.add((pi) => {
+      if (pi.type !== B().PointerEventTypes.POINTERDOWN) return;
+      const m = pi.pickInfo && pi.pickInfo.pickedMesh;
+      if (!m || !allPlaced()) return;
+      const n = m.name;
+      if (n === 'btnAddMass') bump('Mass', +1);
+      else if (n === 'btnSubMass') bump('Mass', -1);
+      else if (n === 'btnAddForce') bump('Force', +1);
+      else if (n === 'btnSubForce') bump('Force', -1);
+      else if (/^(cartBody|cartMass|mw)/.test(n) && sim && !state.running) {
+        // 수레를 누르면 출발 위치로 되돌린다
+        reset();
+        if (onChangeCb) onChangeCb();
+      }
+    });
+  }
+
   /* ── 배치 자리 ──────────────────────────────── */
   const holders = {};
   function buildPlaceholders() {
@@ -282,12 +426,50 @@ const MotionScene = (() => {
     // 질량에 따라 수레 위 추 개수를 바꾼다
     const n = Math.round((state.mass - 0.5) / 0.5);
     for (let i = 0; i < 3; i++) cart['_w' + i].setEnabled(i < n);
+
+    const pulley = state.drive === 'pulley';
     // 용수철저울은 수레 앞에 붙어 함께 간다
-    spring.position.set(sim.x * M + 2.1, TABLE_Y + 0.72, 0);
-    const gap = 1.0;
-    spring._rope.scaling.y = gap;
-    spring._rope.position.set(-1.1 - gap / 2 + 0.05, 0, 0);
-    drawSpring();
+    spring.setEnabled(!pulley && !!placed.spring);
+    if (!pulley) {
+      spring.position.set(sim.x * M + 2.1, TABLE_Y + 0.72, 0);
+      const gap = 1.0;
+      spring._rope.scaling.y = gap;
+      spring._rope.position.set(-1.1 - gap / 2 + 0.05, 0, 0);
+      drawSpring();
+    }
+
+    // 도르래·실·매단 추
+    if (pulleyG) {
+      pulleyG.setEnabled(pulley && !!placed.spring);
+      if (pulley) {
+        const px = pulleyG._x;
+        const cx = sim.x * M + 0.75;                 // 수레 앞쪽 고리
+        const yH = TABLE_Y + 3.85;
+        // 수평 실 : 수레 → 도르래
+        // 수레의 고리(낮은 높이) 에서 도르래(높은 곳) 까지 비스듬히 잇는다
+        const yC = TABLE_Y + 1.0;
+        const dx = px - cx, dy = yH - yC;
+        const len = Math.max(0.1, Math.hypot(dx, dy));
+        ropeH.scaling.y = len;
+        ropeH.rotation.z = Math.atan2(-dx, dy);      // 원기둥의 +y 축을 (dx, dy) 방향으로
+        ropeH.position.set(cx + dx / 2, yC + dy / 2, 0);
+        // 연직 실 : 도르래 → 추 (수레가 나아간 만큼 추가 내려간다)
+        const k0 = Math.max(1, Math.round(state.hang / 0.1));
+        const stack = 0.2 + (k0 - 1) * 0.36 + 0.2;    // 추 뭉치의 높이
+        const maxDrop = yH - TABLE_Y - stack - 0.15;  // 책상면에 닿으면 더 내려가지 않는다
+        const drop = Math.min(maxDrop, 1.4 + (sim.x - (X0 + 0.4)) * M);
+        ropeV.scaling.y = drop;
+        ropeV.position.set(px + 0.55, yH - drop / 2, 0);
+        // 매단 추 : 0.05 kg 당 원판 한 장
+        const k = k0;
+        for (let i = 0; i < 5; i++) {
+          const w = hangG['_w' + i];
+          w.setEnabled(i < k);
+          w.position.set(px + 0.55, yH - drop - 0.2 - i * 0.36, 0);
+        }
+      }
+    }
+    layoutButtons();
   }
 
   function tick(dt) {
@@ -332,17 +514,23 @@ const MotionScene = (() => {
   }
 
   /* ══ 컨트롤 ═════════════════════════════════ */
-  const guide = '힘과 질량을 바꿔 가며 수레를 당겨 보고, 속도–시간 그래프의 <b>기울기(가속도)</b>가 어떻게 변하는지 관찰하세요.';
+  const guide = '수레 위 <b>＋ · －</b> 로 질량을, 저울(또는 매단 추) 옆 <b>＋ · －</b> 로 당기는 힘을 바꿔 가며 당겨 보고, 속도–시간 그래프의 <b>기울기(가속도)</b>가 어떻게 변하는지 관찰하세요.';
   const prepGuide = '점선으로 표시된 자리에 트랙·역학 수레·용수철저울을 끌어다 놓아 실험을 준비하세요.';
 
   function controlsHTML() {
     return `
-      ${LabUI.opts('당기는 힘<br><i>F</i>', 'force', [
-        { v: 1, t: '1 N' }, { v: 2, t: '2 N' }, { v: 3, t: '3 N' },
-      ], state.force, 1)}
-      ${LabUI.opts('수레의<br>질량 <i>m</i>', 'mass', [
-        { v: 0.5, t: '0.5 kg' }, { v: 1.0, t: '1.0 kg' }, { v: 1.5, t: '1.5 kg' },
-      ], state.mass, 1)}
+      ${LabUI.opts('끄는<br>방식', 'drive', [
+        { v: 'spring', t: '용수철저울' }, { v: 'pulley', t: '도르래 · 추' },
+      ], state.drive, 1)}
+      <div class="control">
+        <div class="clabel">직접<br>조작</div>
+        <div class="cbody"><p class="hands-on">
+          수레 위 <b>＋ · －</b> 로 수레의 질량을,
+          ${state.drive === 'pulley' ? '매단 추 옆' : '용수철저울 옆'}
+          <b>＋ · －</b> 로 ${state.drive === 'pulley' ? '추의 무게' : '당기는 힘'} 을 바꿉니다.
+          <b>수레를 누르면</b> 출발 위치로 돌아갑니다.
+        </p></div>
+      </div>
       <div class="control">
         <div class="clabel">실험</div>
         <button class="power" id="runBtn">▶ 당기기</button>
@@ -354,9 +542,9 @@ const MotionScene = (() => {
   }
 
   function bindControls(root, onChange) {
+    onChangeCb = onChange;
     const after = () => { reset(); onChange(); };
-    LabUI.bindOpts(root, 'force', state, 'force', after);
-    LabUI.bindOpts(root, 'mass', state, 'mass', after);
+    LabUI.bindOpts(root, 'drive', state, 'drive', after, String);
 
     const run = root.querySelector('#runBtn');
     run.addEventListener('click', () => {
@@ -378,11 +566,19 @@ const MotionScene = (() => {
   function readoutHTML() {
     if (!sim) return '';
     const a = accel();
+    const pulley = state.drive === 'pulley';
     return `
-      <div class="row"><span>당기는 힘 <i>F</i></span><b>${state.force.toFixed(1)} N</b></div>
+      ${pulley ? `
+        <div class="row"><span>매단 추 <i>m</i>′</span><b>${state.hang.toFixed(2)} kg</b></div>
+        <div class="row"><span>추의 무게 <i>m</i>′<i>g</i></span><b>${hangWeight().toFixed(2)} N</b></div>
+        <div class="row"><span>실이 당기는 힘 <i>T</i></span><b>${pullForce().toFixed(2)} N</b></div>`
+      : `<div class="row"><span>당기는 힘 <i>F</i></span><b>${state.force.toFixed(1)} N</b></div>`}
       <div class="row"><span>수레의 질량 <i>m</i></span><b>${state.mass.toFixed(1)} kg</b></div>
-      <div class="row"><span>가속도 <i>a</i> = <i>F</i>/<i>m</i></span>
-        <b class="big">${a.toFixed(1)} m/s²</b></div>
+      <div class="row"><span>가속도 <i>a</i></span>
+        <b class="big">${a.toFixed(2)} m/s²</b></div>
+      ${pulley ? `<div class="formula" style="color:#62718a">
+        추도 함께 가속되므로 <b>실이 당기는 힘은 추의 무게보다 작습니다</b>
+        (<i>a</i> = <i>m</i>′<i>g</i> / (<i>m</i>+<i>m</i>′), <i>T</i> = <i>ma</i>).</div>` : ''}
 
       <div class="sec">현재</div>
       <div class="row"><span>시간 <i>t</i></span><b>${sim.t.toFixed(2)} s</b></div>
@@ -485,8 +681,9 @@ const MotionScene = (() => {
 
   function recordRow() {
     const a = accel();
+    // 도르래 방식에서는 «실이 실제로 당기는 힘(장력)» 을 기록한다
     return [
-      state.force.toFixed(1), state.mass.toFixed(1), a.toFixed(1),
+      pullForce().toFixed(2), state.mass.toFixed(1), a.toFixed(2),
       (a * 0.1).toFixed(1), (a * 0.2).toFixed(1), (a * 0.3).toFixed(1), (a * 0.4).toFixed(1),
     ];
   }

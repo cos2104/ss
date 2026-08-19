@@ -93,6 +93,7 @@ const StandingScene = (() => {
     buildResonance();
     buildPlaceholders();
     buildMarks();
+    setupPointer(canvas);
 
     // 교과서 그림 액자 (배경 소품)
     LabUI.addPoster(scene, '../assets/thumbs/standing.jpg', { x: -7.5, y: 0, z: 5, ry: 0.3 });
@@ -198,6 +199,52 @@ const StandingScene = (() => {
       ctx.fillText('공명!', 270, 138);
     }
     meterTex.update();
+  }
+
+  /* ══ 수면을 직접 끌어 조작 ═══════════════════
+     관 안의 물을 마우스로 끌어 올리고 내리며 공명 지점을 찾는다.
+     (교과서 «기주 공명으로 음속 구하기» 활동과 같은 방식)          */
+  let dragWater = false;
+  let onChangeCb = null;
+  const TUBE_TOP_Y = 4.8;                 // 관 위 끝의 높이 (scene)
+  const TUBE_H_U = 4.6;                   // 관의 길이 (scene)
+  const DEPTH_MAX = 1.05;                 // 관 끝 ~ 수면 최대 (m)
+
+  /** 마우스 높이 → 공기 기둥 길이(m) */
+  function pointerDepth() {
+    const ray = scene.createPickingRay(scene.pointerX, scene.pointerY, null, camera);
+    const plane = B().Plane.FromPositionAndNormal(
+      new (B().Vector3)(0, 0, 0), new (B().Vector3)(0, 0, 1));
+    const d = ray.intersectsPlane(plane);
+    if (d === null) return null;
+    const y = ray.origin.add(ray.direction.scale(d)).y;
+    const airU = Math.max(0.05, Math.min(TUBE_H_U - 0.2, TUBE_TOP_Y - y));
+    return +(airU / 4.2).toFixed(3);       // layout 의 환산(=depth * 4.2) 을 되돌린다
+  }
+
+  function setupPointer(canvas) {
+    scene.onPointerObservable.add((pi) => {
+      const T = B().PointerEventTypes;
+      if (pi.type === T.POINTERDOWN) {
+        const m = pi.pickInfo && pi.pickInfo.pickedMesh;
+        if (!m || state.mode !== 'res') return;
+        if (!/^(stWater|stTube)/.test(m.name)) return;
+        dragWater = true;
+        camera.detachControl();
+      } else if (pi.type === T.POINTERMOVE && dragWater) {
+        const d = pointerDepth();
+        if (d === null) return;
+        const v = Math.max(0.02, Math.min(DEPTH_MAX, d));
+        if (Math.abs(v - state.depth) > 0.001) {
+          state.depth = v;
+          update();
+          if (onChangeCb) onChangeCb();
+        }
+      } else if (pi.type === T.POINTERUP && dragWater) {
+        dragWater = false;
+        camera.attachControl(canvas, true);
+      }
+    });
   }
 
   /* ── 마디 · 배 이름표 ────────────────────────
@@ -428,7 +475,7 @@ const StandingScene = (() => {
   }
 
   /* ══ 컨트롤 ═════════════════════════════════ */
-  const guide = '수면을 천천히 내리며 소리가 가장 커지는 위치 y₁, y₂, y₃ 을 찾아 «기록» 하세요. λ = 2(y₂−y₁) 로 음속을 구할 수 있습니다.';
+  const guide = '관 속의 <b>물을 직접 끌어</b> 천천히 내리며 소리가 가장 커지는 위치 y₁, y₂, y₃ 을 찾아 «기록» 하세요. λ = 2(y₂−y₁) 로 음속을 구할 수 있습니다.';
   const prepGuide = '점선 자리에 줄·진동 발생기·유리관·소리 발생기를 끌어다 놓아 실험을 준비하세요.';
 
   function controlsHTML() {
@@ -457,7 +504,14 @@ const StandingScene = (() => {
     }
     return `
       ${modeBtns}
-      ${LabUI.slider('depth', '관 끝 ~ 수면<br>(공기 기둥)',
+      <div class="control">
+        <div class="clabel">직접<br>조작</div>
+        <div class="cbody"><p class="hands-on">
+          관 속의 <b>물을 위아래로 끌어</b> 공기 기둥의 길이를 바꿉니다.
+          소리가 가장 커지는 곳이 <b>공명 지점</b>입니다.
+        </p></div>
+      </div>
+      ${LabUI.slider('depth', '관 끝 ~ 수면<br>(미세 조정)',
         { min: 0.03, max: 1.0, step: 0.002, value: state.depth, fmt: (v) => `${(v * 100).toFixed(1)} cm` })}
       <div class="control">
         <div class="clabel">공명 위치<br>표시</div>
@@ -470,6 +524,7 @@ const StandingScene = (() => {
   }
 
   function bindControls(root, onChange) {
+    onChangeCb = onChange;          // 3D 에서 수면을 끌어도 측정값이 갱신되도록
     root.querySelectorAll('[data-mode]').forEach((b) => b.addEventListener('click', () => {
       state.mode = b.dataset.mode;
       reset();
