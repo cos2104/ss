@@ -31,11 +31,12 @@ const TorqueScene = (() => {
     return { tL, tR, diff: tR - tL, balanced: Math.abs(tR - tL) < 1e-6 };
   }
 
-  /** 기울어진 각도 (평형이 아니면 무거운 쪽으로 기운다) */
+  /** 기울어진 각도 — 돌림힘이 «큰 쪽이 내려간다»
+      (화면에서 +z 회전은 반시계 방향이므로, 오른쪽이 무거우면 −부호) */
   function tiltAngle() {
-    const { diff } = torques();
+    const { diff } = torques();          // diff = τ오른쪽 − τ왼쪽
     const max = 0.34;
-    return Math.max(-max, Math.min(max, diff * 0.11));
+    return Math.max(-max, Math.min(max, -diff * 0.11));
   }
 
   const tools = [
@@ -75,7 +76,9 @@ const TorqueScene = (() => {
     buildTable();
     buildStand();
     buildBar();
+    buildButtons();
     buildPlaceholders();
+    setupPointer(canvas);
 
     // 교과서 그림 액자 (배경 소품)
     LabUI.addPoster(scene, '../assets/thumbs/torque.jpg', { x: -10.5, y: -0.5, z: 3.5, ry: 0.42 });
@@ -222,6 +225,120 @@ const TorqueScene = (() => {
     stringR = r.str; rightStack = r.arr;
   }
 
+  /* ══ 3D 화면에서 직접 조작 ═══════════════════
+     · 추 뭉치를 좌우로 끌면 가장 가까운 눈금으로 옮겨 걸린다
+     · 걸이 옆 ＋ / － 를 누르면 추를 더 걸거나 덜어 낸다          */
+  let btns = {};
+  let drag = null;              // { side }
+  let onChangeCb = null;        // 조작하면 측정값·그래프를 다시 그리도록
+
+  function makeBtn(side, kind) {
+    const name = 'btn' + kind + side;
+    const pl = B().MeshBuilder.CreatePlane(name, { width: 0.9, height: 0.9 }, scene);
+    const tex = new (B().DynamicTexture)(name + 'T', { width: 96, height: 96 }, scene, true);
+    const c = tex.getContext();
+    c.clearRect(0, 0, 96, 96);
+    c.fillStyle = kind === 'Add' ? '#2f6ad0' : '#8e9bad';
+    c.beginPath(); c.arc(48, 48, 42, 0, 7); c.fill();
+    c.strokeStyle = '#fff'; c.lineWidth = 9; c.lineCap = 'round';
+    c.beginPath(); c.moveTo(28, 48); c.lineTo(68, 48); c.stroke();
+    if (kind === 'Add') { c.beginPath(); c.moveTo(48, 28); c.lineTo(48, 68); c.stroke(); }
+    tex.hasAlpha = true; tex.update();
+    const m = new (B().StandardMaterial)(name + 'M', scene);
+    m.diffuseTexture = tex; m.opacityTexture = tex; m.emissiveTexture = tex;
+    m.emissiveColor = new (B().Color3)(1, 1, 1);
+    m.specularColor = new (B().Color3)(0, 0, 0);
+    m.backFaceCulling = false;
+    pl.material = m;
+    pl.rotation.y = Math.PI;          // 카메라 쪽을 보게
+    pl.parent = bar;
+    return pl;
+  }
+
+  function buildButtons() {
+    ['L', 'R'].forEach((side) => {
+      btns[side] = { add: makeBtn(side, 'Add'), sub: makeBtn(side, 'Sub') };
+    });
+    layoutButtons();
+  }
+
+  function layoutButtons() {
+    ['L', 'R'].forEach((side) => {
+      if (!btns[side]) return;
+      const pos = side === 'L' ? state.posL : state.posR;
+      const x = -pos * NOTCH_U * (side === 'L' ? 1 : -1);
+      btns[side].add.position.set(x + 0.85, -1.35, -0.6);
+      btns[side].sub.position.set(x - 0.85, -1.35, -0.6);
+      const on = !!placed.weights && !!placed.bar;
+      btns[side].add.setEnabled(on);
+      btns[side].sub.setEnabled(on);
+    });
+  }
+
+  /** 이름에서 «어느 쪽 추인지» 알아낸다 */
+  function sideOf(name) {
+    const m = /^(?:wBody|wRing|str|btnAdd|btnSub)([LR])/.exec(name || '');
+    return m ? m[1] : null;
+  }
+
+  function setCount(side, d) {
+    const key = side === 'L' ? 'nL' : 'nR';
+    const v = Math.max(1, Math.min(6, state[key] + d));
+    if (v === state[key]) return;
+    state[key] = v;
+    update();
+    layoutButtons();
+    if (onChangeCb) onChangeCb();
+  }
+
+  function setPos(side, pos) {
+    const key = side === 'L' ? 'posL' : 'posR';
+    const v = Math.max(1, Math.min(NOTCH, pos));
+    if (v === state[key]) return;
+    state[key] = v;
+    update();
+    layoutButtons();
+    if (onChangeCb) onChangeCb();
+  }
+
+  /** 마우스가 가리키는 지점을 지레 평면(z = 0) 위 x 좌표로 */
+  function pointerX() {
+    const ray = scene.createPickingRay(scene.pointerX, scene.pointerY, null, camera);
+    const plane = B().Plane.FromPositionAndNormal(
+      new (B().Vector3)(0, BAR_Y, 0), new (B().Vector3)(0, 0, 1));
+    const d = ray.intersectsPlane(plane);
+    if (d === null) return null;
+    return ray.origin.add(ray.direction.scale(d)).x;
+  }
+
+  function setupPointer(canvas) {
+    scene.onPointerObservable.add((pi) => {
+      const T = B().PointerEventTypes;
+      if (pi.type === T.POINTERDOWN) {
+        const pick = pi.pickInfo;
+        if (!pick || !pick.hit || !pick.pickedMesh) return;
+        const nm = pick.pickedMesh.name;
+        const side = sideOf(nm);
+        if (!side || !placed.weights) return;
+        if (nm.indexOf('btnAdd') === 0) { setCount(side, +1); return; }
+        if (nm.indexOf('btnSub') === 0) { setCount(side, -1); return; }
+        drag = { side };
+        camera.detachControl();
+      } else if (pi.type === T.POINTERMOVE && drag) {
+        const x = pointerX();
+        if (x === null) return;
+        const raw = Math.abs(x) / NOTCH_U;
+        // 왼쪽 추는 왼쪽에만, 오른쪽 추는 오른쪽에만 걸 수 있다
+        const sameSide = (drag.side === 'L' && x < 0) || (drag.side === 'R' && x > 0);
+        if (!sameSide) return;
+        setPos(drag.side, Math.round(raw));
+      } else if (pi.type === T.POINTERUP && drag) {
+        drag = null;
+        camera.attachControl(canvas, true);
+      }
+    });
+  }
+
   /* ── 배치 자리 ──────────────────────────────── */
   const holders = {};
   function buildPlaceholders() {
@@ -234,20 +351,7 @@ const TorqueScene = (() => {
       const p = B().MeshBuilder.CreatePlane('ph_' + id, { width: c.w, height: c.h }, scene);
       p.position.set(c.x, c.y, 0.5);
       p.rotation.y = Math.PI;
-      const tex = new (B().DynamicTexture)('phT_' + id, { width: 400, height: 120 }, scene, true);
-      const ctx = tex.getContext();
-      ctx.clearRect(0, 0, 400, 120);
-      ctx.translate(400, 0); ctx.scale(-1, 1);
-      ctx.strokeStyle = '#2f6ad0'; ctx.lineWidth = 5;
-      ctx.setLineDash([15, 11]);
-      ctx.strokeRect(7, 7, 386, 106);
-      ctx.setLineDash([]);
-      ctx.fillStyle = '#2f6ad0';
-      ctx.font = 'bold 38px "Noto Sans KR", sans-serif';
-      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-      ctx.fillText(c.label, 200, 64);
-      ctx.setTransform(1, 0, 0, 1, 0, 0);
-      tex.hasAlpha = true; tex.update();
+      const tex = LabUI.slotTexture(scene, 'phT_' + id, c.w, c.h, c.label, { mirror: true, color: '#2f6ad0' });
       const m = new (B().StandardMaterial)('phM_' + id, scene);
       m.diffuseTexture = tex; m.opacityTexture = tex;
       m.emissiveColor = new (B().Color3)(1, 1, 1);
@@ -286,6 +390,7 @@ const TorqueScene = (() => {
   function update() {
     if (!scene) return;
     rebuildWeights();
+    layoutButtons();
     targetTilt = tiltAngle();
     return true;
   }
@@ -317,10 +422,13 @@ const TorqueScene = (() => {
 
   function controlsHTML() {
     return `
-      ${LabUI.opts('왼쪽<br>눈금', 'posl', notchOpts, state.posL, 2)}
-      ${LabUI.opts('왼쪽<br>추 개수', 'nl', countOpts, state.nL, 2)}
-      ${LabUI.opts('오른쪽<br>눈금', 'posr', notchOpts, state.posR, 2)}
-      ${LabUI.opts('오른쪽<br>추 개수', 'nr', countOpts, state.nR, 2)}
+      <div class="control">
+        <div class="clabel">직접<br>조작</div>
+        <div class="cbody"><p class="hands-on">
+          <b>추 뭉치를 끌어</b> 옮기면 가까운 눈금에 걸리고,
+          걸이 옆의 <b>＋ · －</b> 를 누르면 추를 더 걸거나 덜어 냅니다.
+        </p></div>
+      </div>
       <div class="control">
         <div class="clabel">평형<br>맞추기</div>
         <div class="cbody"><div class="opt-grid one-row">
@@ -330,10 +438,7 @@ const TorqueScene = (() => {
   }
 
   function bindControls(root, onChange) {
-    LabUI.bindOpts(root, 'posl', state, 'posL', onChange);
-    LabUI.bindOpts(root, 'nl', state, 'nL', onChange);
-    LabUI.bindOpts(root, 'posr', state, 'posR', onChange);
-    LabUI.bindOpts(root, 'nr', state, 'nR', onChange);
+    onChangeCb = onChange;          // 3D 에서 직접 조작해도 측정값이 갱신되도록
 
     // 스스로 찾아본 뒤 확인하는 용도
     root.querySelector('#balanceBtn').addEventListener('click', () => {

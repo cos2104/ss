@@ -578,3 +578,10 @@ i { font-family: 'Times New Roman', serif; font-size: 1.12em; }
   .wl-t { width: 92px; font-size: 12px; }
   .fx-fig { min-width: 120px; }
 }
+
+/* 3D 화면에서 직접 조작하는 실험 — 하단 안내 문구 */
+.controls .hands-on {
+  font-size: 13px; line-height: 1.65; color: var(--ink-soft);
+  padding: 4px 2px; max-width: 460px;
+}
+.controls .hands-on b { color: var(--key); }

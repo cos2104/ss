@@ -252,18 +252,7 @@ const AmpereScene = (() => {
     Object.entries(spec).forEach(([id, c]) => {
       const p = B().MeshBuilder.CreateGround('ph_' + id, { width: c.w, height: c.h }, scene);
       p.position.set(c.x, 0.06 + (id === 'wire' ? 0.02 : id === 'compass' ? 0.04 : 0), c.z);
-      const tex = new (B().DynamicTexture)('phT_' + id, { width: 256, height: 256 }, scene, true);
-      const ctx = tex.getContext();
-      ctx.clearRect(0, 0, 256, 256);
-      ctx.strokeStyle = '#5aa9ff'; ctx.lineWidth = 6;
-      ctx.setLineDash([16, 12]);
-      ctx.strokeRect(8, 8, 240, 240);
-      ctx.setLineDash([]);
-      ctx.fillStyle = '#8fd0ff';
-      ctx.font = 'bold 28px "Noto Sans KR", sans-serif';
-      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-      ctx.fillText(c.label, 128, 128);
-      tex.hasAlpha = true; tex.update();
+      const tex = LabUI.slotTexture(scene, 'phT_' + id, c.w, c.h, c.label, { mirror: false, color: '#5aa9ff' });
       const m = new (B().StandardMaterial)('phM_' + id, scene);
       m.diffuseTexture = tex; m.opacityTexture = tex;
       m.emissiveColor = new (B().Color3)(1, 1, 1);

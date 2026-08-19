@@ -649,6 +649,45 @@ const LabUI = {
     </div>`;
   },
 
+  /**
+   * 배치 자리 표시(점선 사각형 + 이름) 텍스처.
+   * 판의 가로·세로 비율에 맞춰 텍스처 크기를 정하므로 점선과 글씨가 늘어나지 않고,
+   * 글자는 자리 크기와 상관없이 «같은 실제 크기»로 보인다.
+   *   w, h  : 판의 크기 (월드 단위)
+   *   opt.mirror : 판을 180° 돌려 쓰는 장면이면 true
+   */
+  slotTexture(scene, name, w, h, label, opt = {}) {
+    const PPU = 32;                                   // 월드 1 단위당 픽셀
+    const TW = Math.max(96, Math.min(1024, Math.round(Math.abs(w) * PPU)));
+    const TH = Math.max(64, Math.min(1024, Math.round(Math.abs(h) * PPU)));
+    const tex = new BABYLON.DynamicTexture(name, { width: TW, height: TH }, scene, true);
+    const c = tex.getContext();
+    c.clearRect(0, 0, TW, TH);
+    if (opt.mirror) { c.translate(TW, 0); c.scale(-1, 1); }
+    const color = opt.color || '#2f6ad0';
+    const lw = Math.max(3, Math.round(Math.min(TW, TH) * 0.05));
+    c.strokeStyle = color;
+    c.lineWidth = lw;
+    c.setLineDash([lw * 3, lw * 2.2]);
+    c.strokeRect(lw, lw, TW - lw * 2, TH - lw * 2);
+    c.setLineDash([]);
+    c.fillStyle = color;
+    c.textAlign = 'center';
+    c.textBaseline = 'middle';
+    let px = Math.round(PPU * 0.95);                  // 어느 자리에서나 같은 실제 크기
+    px = Math.min(px, Math.round(TH * 0.5));
+    c.font = `bold ${px}px "Noto Sans KR", sans-serif`;
+    while (px > 9 && c.measureText(label).width > TW - lw * 6) {
+      px -= 2;
+      c.font = `bold ${px}px "Noto Sans KR", sans-serif`;
+    }
+    c.fillText(label, TW / 2, TH / 2);
+    c.setTransform(1, 0, 0, 1, 0, 0);
+    tex.hasAlpha = true;
+    tex.update();
+    return tex;
+  },
+
   /** 교과서 그림 액자 — 장면 배경에 해당 단원의 교과서 이미지를 세워 둔다 */
   addPoster(scene, url, opt = {}) {
     const W = opt.w || 4.2, H = opt.h || 2.9;
@@ -702,7 +741,7 @@ const LabUI = {
     tag.material = tm;
     tag.parent = g;
     g.position.set(opt.x || 0, opt.y || 0, opt.z || 6);
-    if (opt.ry) g.rotation.y = opt.ry;
+    // opt.ry 는 예전 장면들이 쓰던 값 — 첫 프레임에서 카메라를 향해 다시 맞춘다
 
     /* 액자가 공중에 뜨거나 허공에 놓이지 않도록, 첫 프레임에서
        바로 아래에 있는 «평평한 면»(실험대·바닥) 위에 내려놓는다.
@@ -727,7 +766,18 @@ const LabUI = {
         });
         return top;
       };
+      const face = () => {
+        // 액자 앞면의 법선은 (0,0,−1) — 카메라 쪽을 향하도록 y 회전을 맞춘다.
+        // (예전에는 장면마다 ry 를 손으로 넣어 대부분 바깥쪽을 보고 있었다)
+        const cam = scene.activeCamera;
+        if (!cam) return;
+        const cp = cam.position;
+        const dx = cp.x - g.position.x, dz = cp.z - g.position.z;
+        if (Math.hypot(dx, dz) < 1e-3) return;
+        g.rotation.y = Math.atan2(-dx, -dz) + (opt.turn || 0);
+      };
       const place = () => {
+        face();
         const list = surfaces();
         if (!list.length) return;
         let top = topAt(g.position.x, g.position.z, list);

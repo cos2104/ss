@@ -236,18 +236,7 @@ const SemiScene = (() => {
     Object.entries(spec).forEach(([id, c]) => {
       const p = B().MeshBuilder.CreateGround('ph_' + id, { width: c.w, height: c.h }, scene);
       p.position.set(0, c.y, 0);
-      const tex = new (B().DynamicTexture)('phT_' + id, { width: 256, height: 200 }, scene, true);
-      const ctx = tex.getContext();
-      ctx.clearRect(0, 0, 256, 200);
-      ctx.strokeStyle = '#5aa9ff'; ctx.lineWidth = 5;
-      ctx.setLineDash([14, 10]);
-      ctx.strokeRect(7, 7, 242, 186);
-      ctx.setLineDash([]);
-      ctx.fillStyle = '#8fd0ff';
-      ctx.font = 'bold 26px "Noto Sans KR", sans-serif';
-      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-      ctx.fillText(c.label, 128, 100);
-      tex.hasAlpha = true; tex.update();
+      const tex = LabUI.slotTexture(scene, 'phT_' + id, c.w, c.h, c.label, { mirror: false, color: '#5aa9ff' });
       const m = new (B().StandardMaterial)('phM_' + id, scene);
       m.diffuseTexture = tex; m.opacityTexture = tex;
       m.emissiveColor = new (B().Color3)(1, 1, 1);

@@ -113,6 +113,7 @@ const LensScene = (() => {
     // 교과서 그림 액자 (배경 소품)
     LabUI.addPoster(scene, '../assets/thumbs/lens.jpg', { x: -9, y: 0, z: 4.5, ry: 0.3 });
 
+    setupPointer(canvas);
     resetTools();
     return scene;
   }
@@ -378,6 +379,48 @@ const LensScene = (() => {
     rays.isPickable = false;
   }
 
+  /* ══ 광학대 위에서 직접 끌기 ═══════════════════
+     LED(물체) 와 스크린을 마우스로 끌면 광학대 눈금을 따라 움직인다.  */
+  let drag = null;
+  let onChangeCb = null;
+
+  function pointerXcm() {
+    const ray = scene.createPickingRay(scene.pointerX, scene.pointerY, null, camera);
+    const plane = B().Plane.FromPositionAndNormal(
+      new (B().Vector3)(0, AXIS_Y, 0), new (B().Vector3)(0, 0, 1));
+    const d = ray.intersectsPlane(plane);
+    if (d === null) return null;
+    return ray.origin.add(ray.direction.scale(d)).x / U;      // cm
+  }
+
+  function setupPointer(canvas) {
+    scene.onPointerObservable.add((pi) => {
+      const T = B().PointerEventTypes;
+      if (pi.type === T.POINTERDOWN) {
+        const m = pi.pickInfo && pi.pickInfo.pickedMesh;
+        if (!m) return;
+        const n = m.name;
+        if (/^(ledBox|ledMount|objShaft|objHead)/.test(n) && placed.led) drag = 'led';
+        else if (/^(lensScreen|screenMount)/.test(n) && placed.screen) drag = 'screen';
+        else return;
+        camera.detachControl();
+      } else if (pi.type === T.POINTERMOVE && drag) {
+        const cm = pointerXcm();
+        if (cm === null) return;
+        if (drag === 'led') {
+          const v = Math.max(5, Math.min(60, Math.round(-cm)));
+          if (v !== state.a) { state.a = v; update(); if (onChangeCb) onChangeCb(); }
+        } else {
+          const v = Math.max(3, Math.min(60, Math.round(cm * 2) / 2));
+          if (v !== state.b) { state.b = v; update(); if (onChangeCb) onChangeCb(); }
+        }
+      } else if (pi.type === T.POINTERUP && drag) {
+        drag = null;
+        camera.attachControl(canvas, true);
+      }
+    });
+  }
+
   /* ── 배치 자리 ──────────────────────────────── */
   const holders = {};
   function buildPlaceholders() {
@@ -392,18 +435,7 @@ const LensScene = (() => {
       p.rotation.y = Math.PI / 2;
       p.position.set(c.x * U, c.y, 0);
       if (id === 'bench') { p.rotation.set(Math.PI / 2, 0, 0); p.position.y = 0.06; }
-      const tex = new (B().DynamicTexture)('phT_' + id, { width: 256, height: 200 }, scene, true);
-      const ctx = tex.getContext();
-      ctx.clearRect(0, 0, 256, 200);
-      ctx.strokeStyle = '#5aa9ff'; ctx.lineWidth = 5;
-      ctx.setLineDash([14, 10]);
-      ctx.strokeRect(8, 8, 240, 184);
-      ctx.setLineDash([]);
-      ctx.fillStyle = '#8fd0ff';
-      ctx.font = 'bold 30px "Noto Sans KR", sans-serif';
-      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-      ctx.fillText(c.label, 128, 100);
-      tex.hasAlpha = true; tex.update();
+      const tex = LabUI.slotTexture(scene, 'phT_' + id, c.w, c.h, c.label, { mirror: false, color: '#5aa9ff' });
       const m = new (B().StandardMaterial)('phM_' + id, scene);
       m.diffuseTexture = tex; m.opacityTexture = tex;
       m.emissiveColor = new (B().Color3)(1, 1, 1);
@@ -504,6 +536,7 @@ const LensScene = (() => {
   }
 
   function bindControls(root, onChange) {
+    onChangeCb = onChange;          // 3D 에서 끌어 옮겨도 측정값이 갱신되도록
     LabUI.bindOpts(root, 'type', state, 'type', onChange, String);
     LabUI.bindSlider(root, 'f', state, 'f', (v) => `${v.toFixed(1)} cm`, onChange);
     LabUI.bindSlider(root, 'a', state, 'a', (v) => `${v} cm`, onChange);

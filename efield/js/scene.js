@@ -276,18 +276,7 @@ const EFieldScene = (() => {
     Object.entries(slots).forEach(([id, s]) => {
       const p = B().MeshBuilder.CreateGround('ph_' + id, { width: 2.6, height: 2.6 }, scene);
       p.position.set(s.x * U, PLANE_Y + 0.06, id === 'test' ? 0.9 * U : 0);
-      const tex = new (B().DynamicTexture)('phT_' + id, { width: 200, height: 200 }, scene, true);
-      const ctx = tex.getContext();
-      ctx.clearRect(0, 0, 200, 200);
-      ctx.strokeStyle = '#5aa9ff'; ctx.lineWidth = 5;
-      ctx.setLineDash([13, 10]);
-      ctx.strokeRect(7, 7, 186, 186);
-      ctx.setLineDash([]);
-      ctx.fillStyle = '#8fd0ff';
-      ctx.font = 'bold 24px "Noto Sans KR", sans-serif';
-      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-      ctx.fillText(s.name, 100, 100);
-      tex.hasAlpha = true; tex.update();
+      const tex = LabUI.slotTexture(scene, 'phT_' + id, 2.6, 2.6, s.name, { mirror: false, color: '#5aa9ff' });
       const m = new (B().StandardMaterial)('phM_' + id, scene);
       m.diffuseTexture = tex; m.opacityTexture = tex;
       m.emissiveColor = new (B().Color3)(1, 1, 1);

@@ -255,18 +255,7 @@ const GasScene = (() => {
     Object.entries(spec).forEach(([id, c]) => {
       const p = B().MeshBuilder.CreateGround('ph_' + id, { width: c.w, height: c.h }, scene);
       p.position.set(c.x, 0.05, c.z);
-      const tex = new (B().DynamicTexture)('phT_' + id, { width: 420, height: 120 }, scene, true);
-      const ctx = tex.getContext();
-      ctx.clearRect(0, 0, 420, 120);
-      ctx.strokeStyle = '#2f6ad0'; ctx.lineWidth = 5;
-      ctx.setLineDash([15, 11]);
-      ctx.strokeRect(7, 7, 406, 106);
-      ctx.setLineDash([]);
-      ctx.fillStyle = '#2f6ad0';
-      ctx.font = 'bold 38px "Noto Sans KR", sans-serif';
-      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-      ctx.fillText(c.label, 210, 64);
-      tex.hasAlpha = true; tex.update();
+      const tex = LabUI.slotTexture(scene, 'phT_' + id, c.w, c.h, c.label, { mirror: false, color: '#2f6ad0' });
       const m = new (B().StandardMaterial)('phM_' + id, scene);
       m.diffuseTexture = tex; m.opacityTexture = tex;
       m.emissiveColor = new (B().Color3)(1, 1, 1);
