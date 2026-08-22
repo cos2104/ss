@@ -79,6 +79,8 @@ const CollisionScene = (() => {
     // 교과서 그림 액자 (배경 소품)
     LabUI.addPoster(scene, '../assets/thumbs/collision.jpg', { x: -12, y: 0, z: 5, ry: 0.3 });
 
+    buildSteppers();
+    setupPointer(canvas);
     resetTools();
     return scene;
   }
@@ -313,8 +315,82 @@ const CollisionScene = (() => {
     if (!sim) return;
     cartA.position.x = sim.xA * M;
     cartB.position.x = sim.xB * M;
+    layoutSteppers();
     if (trailA) { trailA.dispose(); trailA = null; }
     if (trailB) { trailB.dispose(); trailB = null; }
+  }
+
+  /* ══ 화면에서 직접 조작 ═══════════════════════
+     · 수레 A 를 왼쪽으로 «뒤로 끌었다 놓으면» 그만큼 빠르게 출발한다
+     · 수레 위 ＋ / － 로 각 수레의 질량을 바꾼다                     */
+  let stepA = null, stepB = null;
+  let pull = null;                 // { x0 }
+  let onChangeCb = null;
+
+  function buildSteppers() {
+    stepA = LabUI.makeStepper(scene, 'MA');
+    stepB = LabUI.makeStepper(scene, 'MB');
+  }
+
+  function layoutSteppers() {
+    if (!stepA || !sim) return;
+    const on = allPlaced();
+    stepA.place(sim.xA * M, TABLE_Y + 3.5, -1.0, 0.9);
+    stepB.place(sim.xB * M, TABLE_Y + 3.5, -1.0, 0.9);
+    stepA.setEnabled(on); stepB.setEnabled(on);
+  }
+
+  function bumpMass(which, d) {
+    const key = which === 'A' ? 'mA' : 'mB';
+    state[key] = Math.max(0.2, Math.min(1.5, +(state[key] + d * 0.1).toFixed(1)));
+    reset();
+    layoutSteppers();
+    if (onChangeCb) onChangeCb();
+  }
+
+  function pointerXm() {
+    const ray = scene.createPickingRay(scene.pointerX, scene.pointerY, null, camera);
+    const plane = B().Plane.FromPositionAndNormal(
+      new (B().Vector3)(0, TABLE_Y + CART_H, 0), new (B().Vector3)(0, 1, 0));
+    const d = ray.intersectsPlane(plane);
+    if (d === null) return null;
+    return ray.origin.add(ray.direction.scale(d)).x / M;
+  }
+
+  function setupPointer(canvas) {
+    scene.onPointerObservable.add((pi) => {
+      const T = B().PointerEventTypes;
+      const nm = pi.pickInfo && pi.pickInfo.pickedMesh ? pi.pickInfo.pickedMesh.name : '';
+      if (pi.type === T.POINTERDOWN) {
+        if (!allPlaced()) return;
+        if (nm === 'btnAddMA') { bumpMass('A', +1); return; }
+        if (nm === 'btnSubMA') { bumpMass('A', -1); return; }
+        if (nm === 'btnAddMB') { bumpMass('B', +1); return; }
+        if (nm === 'btnSubMB') { bumpMass('B', -1); return; }
+        if (/A$|A\d$/.test(nm) && /^(cartBody|bump|w)/.test(nm) && !state.running) {
+          const x = pointerXm();
+          if (x === null) return;
+          pull = { x0: x };
+          camera.detachControl();
+        }
+      } else if (pi.type === T.POINTERMOVE && pull) {
+        const x = pointerXm();
+        if (x === null) return;
+        // 왼쪽으로 끈 거리만큼 «세게» 출발한다 (고무줄을 당기듯)
+        const back = Math.max(0, pull.x0 - x);
+        state.vA = Math.max(0.4, Math.min(2.5, +(0.4 + back * 2.2).toFixed(1)));
+        if (sim) { sim.xA = (X0 + 0.35) - Math.min(0.55, back); layout(); layoutSteppers(); }
+        if (onChangeCb) onChangeCb();
+      } else if (pi.type === T.POINTERUP && pull) {
+        pull = null;
+        camera.attachControl(canvas, true);
+        reset();
+        state.running = true;                 // 놓으면 바로 출발
+        const btn = document.querySelector('#runBtn');
+        if (btn) { btn.textContent = '진행중'; btn.classList.add('run'); }
+        if (onChangeCb) onChangeCb();
+      }
+    });
   }
 
   /** 매 프레임 진행. 화면을 다시 그려야 하면 true */
@@ -377,6 +453,13 @@ const CollisionScene = (() => {
         { min: 0.2, max: 1.5, step: 0.1, value: state.mB, fmt: (v) => `${v.toFixed(1)} kg` })}
       ${LabUI.slider('vA', 'A 의 처음<br>속도 <i>v</i><sub>A</sub>',
         { min: 0.4, max: 2.5, step: 0.1, value: state.vA, fmt: (v) => `${v.toFixed(1)} m/s` })}
+      <div class="control">
+        <div class="clabel">직접<br>조작</div>
+        <div class="cbody"><p class="hands-on">
+          수레 <b>A 를 왼쪽으로 끌었다 놓으면</b> 그만큼 빠르게 출발합니다.
+          수레 위 <b>＋ · －</b> 로 질량을 바꿉니다.
+        </p></div>
+      </div>
       ${LabUI.opts('충돌의<br>종류', 'type', [
         { v: 'elastic', t: '탄성 (튕김)' },
         { v: 'inelastic', t: '비탄성' },
@@ -393,6 +476,7 @@ const CollisionScene = (() => {
   }
 
   function bindControls(root, onChange) {
+    onChangeCb = onChange;      // 3D 에서 조작해도 측정값이 갱신되도록
     const after = () => { reset(); onChange(); };
     LabUI.bindSlider(root, 'mA', state, 'mA', (v) => `${v.toFixed(1)} kg`, after);
     LabUI.bindSlider(root, 'mB', state, 'mB', (v) => `${v.toFixed(1)} kg`, after);

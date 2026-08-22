@@ -74,6 +74,7 @@ const LorentzScene = (() => {
     // 교과서 그림 액자 (배경 소품)
     LabUI.addPoster(scene, '../assets/thumbs/lorentz.jpg', { x: -10, y: 0, z: 9, ry: 0.35 });
 
+    setupPointer();
     resetTools();
     return scene;
   }
@@ -262,6 +263,31 @@ const LorentzScene = (() => {
     }
     clearTrail();
     layout();
+  }
+
+  /* ══ 자석을 직접 뒤집기 ══════════════════════
+     음극선관의 말굽자석을 누르면 N 극이 위 → 아래 → 치움 → 나란히 로
+     차례로 바뀐다. (자기장 방향과 휘는 방향의 관계를 손으로 확인)      */
+  const MAG_CYCLE = ['up', 'down', 'none', 'along'];
+  let onChangeCb = null;
+
+  function setupPointer() {
+    scene.onPointerObservable.add((pi) => {
+      if (pi.type !== B().PointerEventTypes.POINTERDOWN) return;
+      const m = pi.pickInfo && pi.pickInfo.pickedMesh;
+      if (!m || state.mode !== 'crookes') return;
+      if (!/^loMag/.test(m.name) && !/^loTube/.test(m.name)) return;
+      const i = MAG_CYCLE.indexOf(state.magnetDir);
+      state.magnetDir = MAG_CYCLE[(i + 1) % MAG_CYCLE.length];
+      update();
+      if (onChangeCb) onChangeCb();
+      if (typeof Lab !== 'undefined' && Lab.showHint) {
+        Lab.showHint({ up: 'N 극이 위 — 전자빔이 아래로 휩니다',
+          down: 'N 극이 아래 — 반대로 휩니다',
+          none: '자석을 치웠습니다 — 직진',
+          along: '자기장이 속도와 나란합니다 — 힘이 0, 직진' }[state.magnetDir], true);
+      }
+    });
   }
 
   function layout() {
@@ -463,6 +489,7 @@ const LorentzScene = (() => {
   }
 
   function bindControls(root, onChange) {
+    onChangeCb = onChange;      // 3D 에서 조작해도 측정값이 갱신되도록
     root.querySelectorAll('[data-mode]').forEach((b) => b.addEventListener('click', () => {
       state.mode = b.getAttribute('data-mode');
       reset();

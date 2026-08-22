@@ -86,6 +86,7 @@ const PolarizationScene = (() => {
     // 교과서 그림 액자 (배경 소품)
     LabUI.addPoster(scene, '../assets/thumbs/polarization.jpg', { x: -8, y: 0, z: 4.5, ry: 0.3 });
 
+    setupPointer(canvas);
     resetTools();
     return scene;
   }
@@ -273,6 +274,50 @@ const PolarizationScene = (() => {
     layout();
   }
 
+  /* ══ 편광판을 직접 돌리기 ════════════════════
+     원판을 잡고 돌리면 편광축이 따라 돌아간다.
+     (편광판의 앞면은 x 축을 향하므로, 화면의 (y, −z) 평면에서 각을 잰다)   */
+  let spin = null;                 // { key, mesh }
+  let onChangeCb = null;
+
+  function discAngle(mesh) {
+    const ray = scene.createPickingRay(scene.pointerX, scene.pointerY, null, camera);
+    const c = mesh.getAbsolutePosition();
+    const plane = B().Plane.FromPositionAndNormal(c, new (B().Vector3)(1, 0, 0));
+    const d = ray.intersectsPlane(plane);
+    if (d === null) return null;
+    const pt = ray.origin.add(ray.direction.scale(d));
+    const deg = Math.atan2(pt.y - c.y, -(pt.z - c.z)) * 180 / Math.PI;
+    return Math.round(((deg % 180) + 180) % 180);        // 0~179°
+  }
+
+  function setupPointer(canvas) {
+    scene.onPointerObservable.add((pi) => {
+      const T = B().PointerEventTypes;
+      const mesh = pi.pickInfo && pi.pickInfo.pickedMesh;
+      if (pi.type === T.POINTERDOWN) {
+        if (!mesh || !allPlaced()) return;
+        const n = mesh.name;
+        if (n === 'poPolA') spin = { key: 'thA', mesh };
+        else if (n === 'poPolB') spin = { key: 'thB', mesh };
+        else if (n === 'poFilter') spin = { key: 'thF', mesh };
+        else return;
+        camera.detachControl();
+      } else if (pi.type === T.POINTERMOVE && spin) {
+        const a = discAngle(spin.mesh);
+        if (a === null) return;
+        if (a !== state[spin.key]) {
+          state[spin.key] = a;
+          layout();
+          if (onChangeCb) onChangeCb();
+        }
+      } else if (pi.type === T.POINTERUP && spin) {
+        spin = null;
+        camera.attachControl(canvas, true);
+      }
+    });
+  }
+
   function layout() {
     if (!sim) return;
     const all = allPlaced();
@@ -343,9 +388,18 @@ const PolarizationScene = (() => {
       { v: 'two', t: '편광판 2개 (66쪽)' }, { v: 'display', t: '디스플레이 조도 (68쪽)' },
     ], state.mode, 1);
 
+    const handsOn = `
+      <div class="control">
+        <div class="clabel">직접<br>조작</div>
+        <div class="cbody"><p class="hands-on">
+          화면의 <b>편광판을 잡고 돌리면</b> 편광축이 따라 돌아갑니다.
+        </p></div>
+      </div>`;
+
     if (state.mode === 'two') {
       return `
         ${modeBtns}
+        ${handsOn}
         ${LabUI.slider('thA', '편광판 A 각도',
           { min: 0, max: 180, step: 5, value: state.thA, fmt: (v) => `${v}°` })}
         ${LabUI.slider('thB', '편광판 B 각도',
@@ -357,6 +411,7 @@ const PolarizationScene = (() => {
     }
     return `
       ${modeBtns}
+      ${handsOn}
       ${LabUI.opts('광원', 'source', [
         { v: 'lcd', t: 'LCD (선형)' }, { v: 'oled', t: 'OLED (원형)' },
         { v: 'natural', t: '백열등 (자연광)' }, { v: 'water', t: '물 반사광' },
@@ -370,6 +425,7 @@ const PolarizationScene = (() => {
   }
 
   function bindControls(root, onChange) {
+    onChangeCb = onChange;      // 3D 에서 돌려도 측정값이 갱신되도록
     root.querySelectorAll('[data-mode]').forEach((b) => b.addEventListener('click', () => {
       state.mode = b.getAttribute('data-mode');
       reset();

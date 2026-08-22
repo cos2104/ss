@@ -116,6 +116,8 @@ const CircularScene = (() => {
     // 교과서 그림 액자 (배경 소품)
     LabUI.addPoster(scene, '../assets/thumbs/circular.jpg', { x: -10, y: 0, z: 8, ry: 0.3 });
 
+    buildStepper();
+    setupPointer();
     resetTools();
     return scene;
   }
@@ -382,7 +384,39 @@ const CircularScene = (() => {
         r.rotation.x = Math.PI / 2;
         r.position.set(0, 0.95 - i * 0.09, 0);
       });
+      layoutStepper();
     }
+  }
+
+  /* ══ 화면에서 직접 조작 ═══════════════════════
+     매달린 쇠고리 옆 ＋ / － 로 구심력을 바꾼다.                  */
+  let stepR = null;
+  let onChangeCb = null;
+
+  function buildStepper() { stepR = LabUI.makeStepper(scene, 'Ring'); }
+
+  function layoutStepper() {
+    if (!stepR) return;
+    const on = state.mode === 'lab' && allPlaced();
+    stepR.place(0, 0.55, 0, 0.95);
+    stepR.setEnabled(on);
+  }
+
+  function bumpRings(d) {
+    state.rings = Math.max(1, Math.min(6, state.rings + d));
+    reset();
+    layoutStepper();
+    if (onChangeCb) onChangeCb();
+  }
+
+  function setupPointer() {
+    scene.onPointerObservable.add((pi) => {
+      if (pi.type !== B().PointerEventTypes.POINTERDOWN) return;
+      const m = pi.pickInfo && pi.pickInfo.pickedMesh;
+      if (!m || state.mode !== 'lab' || !allPlaced()) return;
+      if (m.name === 'btnAddRing') bumpRings(+1);
+      else if (m.name === 'btnSubRing') bumpRings(-1);
+    });
   }
 
   function tick(dt) {
@@ -506,6 +540,7 @@ const CircularScene = (() => {
   }
 
   function bindControls(root, onChange) {
+    onChangeCb = onChange;      // 3D 에서 조작해도 측정값이 갱신되도록
     root.querySelectorAll('[data-mode]').forEach((b) => b.addEventListener('click', () => {
       state.mode = b.dataset.mode;
       reset();

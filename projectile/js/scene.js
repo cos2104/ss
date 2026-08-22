@@ -101,6 +101,8 @@ const ProjectileScene = (() => {
     // 교과서 그림 액자 (배경 소품)
     LabUI.addPoster(scene, '../assets/thumbs/projectile.jpg', { x: -7.5, y: 0, z: 7.5, ry: 0.35 });
 
+    buildStepper();
+    setupPointer(canvas);
     resetTools();
     return scene;
   }
@@ -367,12 +369,70 @@ const ProjectileScene = (() => {
     drawBoard();
   }
 
+  /* ══ 화면에서 직접 조작 ═══════════════════════
+     · 포신을 잡고 돌리면 발사각이 바뀐다 (경첩을 중심으로)
+     · 발사대 옆 ＋ / － 로 처음 속력을 바꾼다                        */
+  let stepV = null;
+  let dragBarrel = false;
+  let onChangeCb = null;
+  const HINGE = { x: -0.5, y: 0.3 };
+
+  function buildStepper() {
+    stepV = LabUI.makeStepper(scene, 'V0');
+  }
+
+  function layoutStepper() {
+    if (!stepV) return;
+    stepV.place(-1.6, 1.9, 0, 0.8);
+    stepV.setEnabled(allPlaced());
+  }
+
+  function bumpV(d) {
+    state.v0 = Math.max(6, Math.min(24, +(state.v0 + d).toFixed(0)));
+    reset();
+    if (onChangeCb) onChangeCb();
+  }
+
+  function setupPointer(canvas) {
+    scene.onPointerObservable.add((pi) => {
+      const T = B().PointerEventTypes;
+      const nm = pi.pickInfo && pi.pickInfo.pickedMesh ? pi.pickInfo.pickedMesh.name : '';
+      if (pi.type === T.POINTERDOWN) {
+        if (!allPlaced()) return;
+        if (nm === 'btnAddV0') { bumpV(+1); return; }
+        if (nm === 'btnSubV0') { bumpV(-1); return; }
+        if (/^(pjBarrel|pjLHinge)/.test(nm) && !state.running) {
+          dragBarrel = true;
+          camera.detachControl();
+        }
+      } else if (pi.type === T.POINTERMOVE && dragBarrel) {
+        const ray = scene.createPickingRay(scene.pointerX, scene.pointerY, null, camera);
+        const plane = B().Plane.FromPositionAndNormal(
+          new (B().Vector3)(0, 0, 0), new (B().Vector3)(0, 0, 1));
+        const d = ray.intersectsPlane(plane);
+        if (d === null) return;
+        const pt = ray.origin.add(ray.direction.scale(d));
+        const deg = Math.atan2(pt.y - HINGE.y, pt.x - HINGE.x) * 180 / Math.PI;
+        const v = Math.max(10, Math.min(85, Math.round(deg)));
+        if (v !== state.angle) {
+          state.angle = v;
+          reset();
+          if (onChangeCb) onChangeCb();
+        }
+      } else if (pi.type === T.POINTERUP && dragBarrel) {
+        dragBarrel = false;
+        camera.attachControl(canvas, true);
+      }
+    });
+  }
+
   function layout() {
     if (!sim) return;
     const p = at(sim.t);
     ball.position.set(p.x * M, Math.max(0, p.y) * M + 0.4, 0);
     // 발사대 포신은 발사각을 따라가고, 총구 끝이 공의 출발점(0, 0.4)과 일치한다
     // 포신 중심 = 총구 − (길이/2)·(cosθ, sinθ). 아래쪽 끝은 받침대 속에 숨는다.
+    layoutStepper();
     barrel.rotation.z = -(Math.PI / 2 - rad());
     barrel.position.set(-Math.cos(rad()) * 0.5, 0.4 - Math.sin(rad()) * 0.5, 0);
   }
@@ -428,6 +488,13 @@ const ProjectileScene = (() => {
         { min: 6, max: 20, step: 0.5, value: state.v0, fmt: (v) => `${(+v).toFixed(1)} m/s` })}
       ${LabUI.slider('angle', '발사각<br><i>θ</i>',
         { min: 15, max: 75, step: 5, value: state.angle, fmt: (v) => `${v}°` })}
+      <div class="control">
+        <div class="clabel">직접<br>조작</div>
+        <div class="cbody"><p class="hands-on">
+          <b>포신을 잡고 돌리면</b> 발사각이 바뀌고, 발사대 옆
+          <b>＋ · －</b> 로 처음 속력을 바꿉니다.
+        </p></div>
+      </div>
       ${LabUI.opts('질량 <i>m</i>', 'mass', [
         { v: 0.2, t: '0.2 kg' }, { v: 0.5, t: '0.5 kg' }, { v: 1.0, t: '1.0 kg' },
       ], state.mass, 1)}
@@ -448,6 +515,7 @@ const ProjectileScene = (() => {
   }
 
   function bindControls(root, onChange) {
+    onChangeCb = onChange;      // 3D 에서 조작해도 측정값이 갱신되도록
     const after = () => { reset(); onChange(); };
     LabUI.bindSlider(root, 'v0', state, 'v0', (v) => `${(+v).toFixed(1)} m/s`, after);
     LabUI.bindSlider(root, 'angle', state, 'angle', (v) => `${v}°`, after);

@@ -688,6 +688,49 @@ const LabUI = {
     return tex;
   },
 
+  /**
+   * 3D 화면에 띄우는 «＋ / －» 단추 한 쌍.
+   * 하단 조작 막대 대신 «화면에서 직접» 값을 바꾸게 할 때 쓴다.
+   *   const st = LabUI.makeStepper(scene, 'Mass');
+   *   st.add / st.sub 의 이름은 'btnAddMass' / 'btnSubMass'
+   *   st.place(x, y, z, gap) 으로 자리를 잡고, st.setEnabled(bool)
+   */
+  makeStepper(scene, key, opt = {}) {
+    const size = opt.size || 0.85;
+    const mk = (kind) => {
+      const name = 'btn' + kind + key;
+      const pl = BABYLON.MeshBuilder.CreatePlane(name, { width: size, height: size }, scene);
+      const tex = new BABYLON.DynamicTexture(name + 'T', { width: 96, height: 96 }, scene, true);
+      const c = tex.getContext();
+      c.clearRect(0, 0, 96, 96);
+      c.fillStyle = kind === 'Add' ? (opt.addColor || '#2f6ad0') : '#8e9bad';
+      c.beginPath(); c.arc(48, 48, 42, 0, 7); c.fill();
+      c.strokeStyle = '#fff'; c.lineWidth = 9; c.lineCap = 'round';
+      c.beginPath(); c.moveTo(28, 48); c.lineTo(68, 48); c.stroke();
+      if (kind === 'Add') { c.beginPath(); c.moveTo(48, 28); c.lineTo(48, 68); c.stroke(); }
+      tex.hasAlpha = true; tex.update();
+      const m = new BABYLON.StandardMaterial(name + 'M', scene);
+      m.diffuseTexture = tex; m.opacityTexture = tex; m.emissiveTexture = tex;
+      m.emissiveColor = new BABYLON.Color3(1, 1, 1);
+      m.specularColor = new BABYLON.Color3(0, 0, 0);
+      m.backFaceCulling = false;
+      pl.material = m;
+      pl.billboardMode = BABYLON.Mesh.BILLBOARDMODE_Y;
+      return pl;
+    };
+    const add = mk('Add'), sub = mk('Sub');
+    return {
+      add, sub,
+      place(x, y, z, gap) {
+        const g = gap || 0.75;
+        add.position.set(x + g, y, z || 0);
+        sub.position.set(x - g, y, z || 0);
+      },
+      setEnabled(v) { add.setEnabled(!!v); sub.setEnabled(!!v); },
+      setParent(pnt) { add.parent = pnt; sub.parent = pnt; },
+    };
+  },
+
   /** 교과서 그림 액자 — 장면 배경에 해당 단원의 교과서 이미지를 세워 둔다 */
   addPoster(scene, url, opt = {}) {
     const W = opt.w || 4.2, H = opt.h || 2.9;
