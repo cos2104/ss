@@ -13,9 +13,16 @@ const MatterwaveScene = (() => {
   const SCREEN_H = 8;         // 스크린 높이
   const NBIN = 80;            // 히스토그램 칸
 
+  const SLIT_X = -2;          // 슬릿 판이 선 자리
+  const SLIT_CY = 3;          // 슬릿 중심 높이
+  const DSC = 0.5;            // 슬릿 간격 d 의 표시 축척
+  const PLATE_OFF = 1.85;     // 슬릿 가장자리에서 판 중심까지 (판 높이의 절반 + 여유)
+
   let scene, camera;
   let gun, slitPlate, screenP, screenTex, detector;
   let placed = {};
+  let canvasRef = null;        // 끌기가 끝나면 카메라를 다시 붙일 캔버스
+  let glowLayer = null;        // 이름표·단추가 하얗게 번지지 않도록 제외할 때 쓴다
 
   const state = {
     lambda: 1.0,        // 드브로이 파장 (연출 단위) — 가속 전압으로 조절
@@ -86,6 +93,8 @@ const MatterwaveScene = (() => {
     hemi.groundColor = new (B().Color3)(0.3, 0.32, 0.4);
     const glow = new (B().GlowLayer)('mwGlow', scene);
     glow.intensity = 0.5;
+    glowLayer = glow;
+    canvasRef = canvas;
 
     const table = B().MeshBuilder.CreateBox('mwTable', { width: 24, height: 0.5, depth: 12 }, scene);
     table.position.y = -0.26;
@@ -96,9 +105,11 @@ const MatterwaveScene = (() => {
     buildScreen();
     buildDetector();
     buildPlaceholders();
+    buildHandsOn();
+    setupPointer(canvas);
 
     // 교과서 그림 액자 (배경 소품)
-    LabUI.addPoster(scene, '../assets/thumbs/matterwave.jpg', { x: -8, y: 0, z: 5.5, ry: 0.3 });
+    LabUI.addPoster(scene, '../assets/thumbs/matterwave.jpg', { x: -9.5, y: 0, z: -5.5 });
 
     resetTools();
     return scene;
@@ -131,6 +142,12 @@ const MatterwaveScene = (() => {
     nose.position.set(-5.6, 3, 0);
     nose.material = mat('mwGunNM', '#5b6675');
     nose.parent = gun;
+    // 발사 중임을 알리는 표시등 — 전자총을 눌러 켜고 끈다
+    const lamp = B().MeshBuilder.CreateSphere('mwGunLamp', { diameter: 0.44 }, scene);
+    lamp.position.set(-7, 3.95, 0);
+    gunLampMat = emat('mwGunLampM', '#3a4250');
+    lamp.material = gunLampMat;
+    lamp.parent = gun;
   }
 
   function buildSlit() {
@@ -148,13 +165,18 @@ const MatterwaveScene = (() => {
   }
 
   function layoutSlit() {
-    // 슬릿 간격 d 에 맞춰 가운데 막대 높이 조절 (중심 y=3)
-    const d = state.dSlit * 0.5;      // 표시 축척 0.5
+    // 슬릿 간격 d 에 맞춰 가운데 막대 높이 조절 (중심 y = SLIT_CY)
+    const d = state.dSlit * DSC;
     slitPlate._mid.scaling.y = Math.max(0.2, (d - 0.5) / 1.0);
-    const half = SCREEN_H * 0.5 * 0.62;
-    slitPlate._top.position.y = 3 + d / 2 + 0.25 + 1.6;
+    slitPlate._top.position.y = SLIT_CY + d / 2 + PLATE_OFF;
     slitPlate._top.scaling.y = 1;
-    slitPlate._bot.position.y = 3 - d / 2 - 0.25 - 1.6;
+    slitPlate._bot.position.y = SLIT_CY - d / 2 - PLATE_OFF;
+  }
+
+  /** 위·아래 판의 중심 높이를 슬릿 간격 d(설정값)으로 되돌린다 — 끌기의 역산 */
+  function dSlitFromPlateY(side, plateY) {
+    const half = side > 0 ? (plateY - SLIT_CY - PLATE_OFF) : (SLIT_CY - PLATE_OFF - plateY);
+    return (2 * half) / DSC;
   }
 
   function buildScreen() {
@@ -193,13 +215,245 @@ const MatterwaveScene = (() => {
     detector = new (B().TransformNode)('mwDet', scene);
     const cam2 = B().MeshBuilder.CreateBox('mwDetB', { width: 0.8, height: 0.8, depth: 0.8 }, scene);
     cam2.position.set(-2, 6.4, 1.4);
-    cam2.material = mat('mwDetBM', '#d0453a', '#ffd0c8', 48);
+    detBodyMat = mat('mwDetBM', '#d0453a', '#ffd0c8', 48);
+    cam2.material = detBodyMat;
     cam2.parent = detector;
     const lens = B().MeshBuilder.CreateCylinder('mwDetL', { height: 0.5, diameter: 0.5 }, scene);
     lens.rotation.x = 0.9;
     lens.position.set(-2, 5.9, 1.0);
     lens.material = mat('mwDetLM', '#20262f');
     lens.parent = detector;
+    // 켜짐 표시등 — 관측 장치를 눌러 켜고 끈다
+    const lamp = B().MeshBuilder.CreateSphere('mwDetLamp', { diameter: 0.3 }, scene);
+    lamp.position.set(-2, 6.92, 1.4);
+    detLampMat = emat('mwDetLampM', '#3a4250');
+    lamp.material = detLampMat;
+    lamp.parent = detector;
+  }
+
+  /* ══ 화면에서 직접 조작 ═══════════════════════
+     · 전자총을 누르면 전자를 쏘기 시작하고 다시 누르면 멈춘다
+     · 슬릿 판의 «위·아래 판을 끌어» 슬릿 간격 d 를 넓히거나 좁힌다
+     · 관측 장치를 누르면 «어느 슬릿으로 지났는지» 감시가 켜지고 꺼진다
+     · 전자총 위 ＋ / － 로 가속 전압을 바꾸어 드브로이 파장 λ 를 조절한다   */
+
+  let onChangeCb = null;        // 3D 에서 조작해도 측정값·그래프가 갱신되도록
+  let stepLam = null;           // λ 를 바꾸는 ＋ / － 단추
+  let lamTag = null, dTag = null;
+  let gunLampMat = null, detLampMat = null, detBodyMat = null;
+  let slitDrag = null;          // { side, y0, p0 } — 누른 순간의 손끝·판 높이
+  let tap = null;               // { what, x, y } — 끌지 않고 «톡 누른» 것인지 가린다
+
+  const TAP_R = 8;              // 이만큼 안 움직이면 누른 것으로 본다 (화면 픽셀)
+  // 판이 손끝을 그대로 따라가면 d 한 칸(0.5)이 화면에서 너무 좁아 값이 튄다.
+  // 손끝이 움직인 만큼의 절반을 판이 따라가게 해 차분히 맞출 수 있도록 한다.
+  const DRAG_GAIN = 0.5;
+
+  /** 값을 적어 두는 작은 이름표 — 늘 카메라 쪽을 본다 */
+  function makeTag(name, w, h) {
+    const pl = B().MeshBuilder.CreatePlane(name, { width: w, height: h }, scene);
+    const TW = Math.round(w * 90), TH = Math.round(h * 90);
+    const tex = new (B().DynamicTexture)(name + 'T', { width: TW, height: TH }, scene, true);
+    tex.hasAlpha = true;
+    const m = new (B().StandardMaterial)(name + 'M', scene);
+    m.diffuseTexture = tex; m.opacityTexture = tex; m.emissiveTexture = tex;
+    m.emissiveColor = new (B().Color3)(1, 1, 1);
+    m.specularColor = new (B().Color3)(0, 0, 0);
+    m.disableLighting = true;
+    m.backFaceCulling = false;
+    pl.material = m;
+    pl.billboardMode = B().Mesh.BILLBOARDMODE_Y;
+    pl.isPickable = false;
+    pl._tex = tex;
+    pl._tw = TW; pl._th = TH;
+    if (glowLayer && glowLayer.addExcludedMesh) glowLayer.addExcludedMesh(pl);
+    return pl;
+  }
+
+  function paintTag(pl, text, hex) {
+    if (!pl || !pl._tex) return;
+    const W = pl._tw, H = pl._th;
+    const c = pl._tex.getContext();
+    c.clearRect(0, 0, W, H);
+    c.fillStyle = 'rgba(14,20,32,.86)';
+    c.fillRect(0, 0, W, H);
+    c.strokeStyle = hex; c.lineWidth = 4;
+    c.strokeRect(2, 2, W - 4, H - 4);
+    c.fillStyle = hex;
+    let px = Math.round(H * 0.52);
+    c.font = `bold ${px}px "Noto Sans KR", sans-serif`;
+    while (px > 12 && c.measureText(text).width > W - 18) {
+      px -= 2;
+      c.font = `bold ${px}px "Noto Sans KR", sans-serif`;
+    }
+    c.textAlign = 'center'; c.textBaseline = 'middle';
+    c.fillText(text, W / 2, H / 2 + 1);
+    pl._tex.update();
+  }
+
+  function buildHandsOn() {
+    stepLam = LabUI.makeStepper(scene, 'Lam');
+    lamTag = makeTag('mwLamTag', 2.8, 0.72);
+    dTag = makeTag('mwDTag', 3.9, 0.72);
+    layoutHands();
+  }
+
+  /** 단추·이름표의 자리와 표시등 색을 다시 잡는다 (layout 에서 매번 부른다) */
+  function layoutHands() {
+    const on = allPlaced();
+    if (stepLam) {
+      // 전자총 몸통(지름 1.4)과 표시등 위로 넉넉히 띄운다
+      stepLam.place(-7, 4.95, 0, 1.0);
+      stepLam.setEnabled(on && !!placed.gunT);
+    }
+    if (lamTag) {
+      lamTag.position.set(-7, 6.05, 0);
+      lamTag.setEnabled(on && !!placed.gunT);
+      paintTag(lamTag, `λ = ${state.lambda.toFixed(1)}`, '#7ae0a0');
+    }
+    if (dTag) {
+      // 위쪽 판의 꼭대기보다 더 위에 두어 슬릿 판과 겹치지 않게 한다
+      const d = state.dSlit * DSC;
+      dTag.position.set(SLIT_X, SLIT_CY + d / 2 + PLATE_OFF + 1.6 + 0.95, 0);
+      dTag.setEnabled(on && !!placed.slitT);
+      paintTag(dTag, `슬릿 간격 d = ${state.dSlit.toFixed(1)}`, '#5ad0f0');
+    }
+    if (gunLampMat) {
+      gunLampMat.emissiveColor = B().Color3.FromHexString(state.running ? '#ffd34a' : '#3a4250');
+    }
+    if (detLampMat) {
+      detLampMat.emissiveColor = B().Color3.FromHexString(state.observe ? '#ff5a48' : '#3a4250');
+    }
+    if (detBodyMat) {
+      detBodyMat.diffuseColor = B().Color3.FromHexString(state.observe ? '#d0453a' : '#59616e');
+    }
+  }
+
+  /** 3D 에서 값을 바꾼 뒤 — 장면과 측정값·그래프를 함께 갱신한다.
+      clear 가 참이면 조건이 달라진 것이므로 스크린과 히스토그램을 비운다. */
+  function applyChange(clear) {
+    if (clear) {
+      const wasRunning = state.running;
+      reset();
+      state.running = wasRunning;      // 3D 로 조절할 때는 발사를 그대로 이어 간다
+    }
+    if (onChangeCb) onChangeCb();      // 껍데기가 update() 까지 불러 준다
+    else update();
+    syncPanel();
+  }
+
+  /** 아래 조작 막대를 3D 에서 바꾼 값에 맞춘다 */
+  function syncPanel() {
+    const put = (id, val, txt) => {
+      const el = document.querySelector('#' + id);
+      const out = document.querySelector('#' + id + 'Out');
+      if (el) el.value = val;
+      if (out) out.textContent = txt;
+    };
+    put('lambda', state.lambda, state.lambda.toFixed(1));
+    put('dSlit', state.dSlit, state.dSlit.toFixed(1));
+    document.querySelectorAll('[data-observe]').forEach((b) => {
+      b.classList.toggle('on', +b.getAttribute('data-observe') === state.observe);
+    });
+    const run = document.querySelector('#runBtn');
+    if (run) {
+      run.textContent = state.running ? '발사 중…' : '▶ 발사';
+      run.classList.toggle('run', state.running);
+    }
+  }
+
+  /** 가속 전압을 한 칸 올리고 내린다 — 전압이 높을수록 λ = h/mv 는 짧아진다.
+      단추는 λ 를 곧바로 0.1 씩 바꾸도록 두어 무늬 간격의 변화를 바로 본다. */
+  function bumpLambda(dir) {
+    const v = Math.max(0.5, Math.min(2.0, +(state.lambda + dir * 0.1).toFixed(1)));
+    if (v === state.lambda) return;
+    state.lambda = v;
+    applyChange(true);
+  }
+
+  function toggleRun() {
+    state.running = !state.running;
+    applyChange(false);
+  }
+
+  function toggleObserve() {
+    state.observe = state.observe ? 0 : 1;
+    applyChange(true);      // 관측 여부가 바뀌면 무늬를 처음부터 다시 쌓는다
+  }
+
+  /** 화면 위 한 점을 슬릿 판이 선 면(z = 0) 위의 세계 좌표로 바꾼다 */
+  function slitPoint() {
+    const ray = scene.createPickingRay(scene.pointerX, scene.pointerY, null, camera);
+    const plane = B().Plane.FromPositionAndNormal(
+      new (B().Vector3)(SLIT_X, SLIT_CY, 0), new (B().Vector3)(0, 0, 1));
+    const d = ray.intersectsPlane(plane);
+    if (d === null || d < 0) return null;   // 면과 거의 나란히 보면 무시한다
+    return ray.origin.add(ray.direction.scale(d));
+  }
+
+  function setupPointer(canvas) {
+    scene.onPointerObservable.add((pi) => {
+      const T = B().PointerEventTypes;
+      const m = pi.pickInfo && pi.pickInfo.pickedMesh;
+      const nm = m ? m.name : '';
+
+      if (pi.type === T.POINTERDOWN) {
+        // 앞서 누른 것이 손을 뗀 신호를 못 받고 남아 있을 수 있다
+        // (오른쪽 단추·두 손가락). 새로 누를 때마다 지워 엉뚱한 곳에서 켜지지 않게 한다.
+        tap = null;
+        if (!allPlaced()) return;          // 장치를 다 놓기 전에는 만지지 못한다
+        if (nm === 'btnAddLam') { bumpLambda(+1); return; }
+        if (nm === 'btnSubLam') { bumpLambda(-1); return; }
+        if (nm.indexOf('mwGun') === 0) {
+          tap = { what: 'gun', x: scene.pointerX, y: scene.pointerY };
+          return;
+        }
+        if (nm.indexOf('mwDet') === 0) {
+          tap = { what: 'det', x: scene.pointerX, y: scene.pointerY };
+          return;
+        }
+        if (slitPlate && (m === slitPlate._top || m === slitPlate._bot)) {
+          const pt = slitPoint();
+          if (!pt) return;
+          // 누른 순간의 손끝 높이와 판 높이를 기억해 두어 «잡자마자 튀지» 않게 한다
+          slitDrag = {
+            side: m === slitPlate._top ? 1 : -1,
+            y0: pt.y, p0: m.position.y, d0: state.dSlit,
+          };
+          camera.detachControl();
+        }
+        return;
+      }
+
+      if (pi.type === T.POINTERMOVE) {
+        if (tap && (Math.abs(scene.pointerX - tap.x) > TAP_R
+                 || Math.abs(scene.pointerY - tap.y) > TAP_R)) tap = null;
+        if (!slitDrag) return;
+        const pt = slitPoint();
+        if (!pt) return;
+        const plateY = slitDrag.p0 + (pt.y - slitDrag.y0) * DRAG_GAIN;
+        const raw = dSlitFromPlateY(slitDrag.side, plateY);
+        const v = Math.max(1.5, Math.min(5, Math.round(raw * 2) / 2));   // 0.5 칸
+        if (v === state.dSlit) return;
+        state.dSlit = v;
+        applyChange(false);            // 끄는 동안에는 무늬를 지우지 않는다
+        return;
+      }
+
+      if (pi.type === T.POINTERUP) {
+        if (slitDrag) {
+          const changed = state.dSlit !== slitDrag.d0;
+          slitDrag = null;
+          camera.attachControl(canvas, true);
+          applyChange(changed);        // 간격이 달라졌을 때만 처음부터 다시 쌓는다
+        } else if (tap) {
+          const what = tap.what;
+          tap = null;
+          if (what === 'gun') toggleRun();
+          else toggleObserve();
+        }
+      }
+    });
   }
 
   /* ── 배치 자리 ──────────────────────────────── */
@@ -230,6 +484,9 @@ const MatterwaveScene = (() => {
   function resetTools() {
     placed = {};
     tools.forEach((t) => { placed[t.id] = false; });
+    // 끌던 도중에 «다시 배치» 를 눌러도 카메라 조작이 잠긴 채로 남지 않게 한다
+    if (slitDrag && camera && canvasRef) camera.attachControl(canvasRef, true);
+    slitDrag = null; tap = null;
     applyPlacement();
   }
   function placeTool(id) { placed[id] = true; applyPlacement(); }
@@ -260,13 +517,14 @@ const MatterwaveScene = (() => {
 
   function layout() {
     if (!sim) return;
-    const all = allPlaced();
     // 놓은 도구부터 하나씩 나타난다
     gun.setEnabled(!!placed.gunT);
     slitPlate.setEnabled(!!placed.slitT);
     screenP.setEnabled(!!placed.scrT);
-    detector.setEnabled(!!placed.obsT && (all ? !!state.observe : true));
+    // 관측 장치는 놓으면 늘 보인다 — 눌러서 켜고 끄므로 표시등 색으로 상태를 알린다
+    detector.setEnabled(!!placed.obsT);
     if (placed.slitT) layoutSlit();
+    layoutHands();
   }
 
   function tick(dt) {
@@ -315,8 +573,18 @@ const MatterwaveScene = (() => {
         { v: 0, t: '끄기' }, { v: 1, t: '켜기 📷' },
       ], state.observe, 1)}
       <div class="control">
+        <div class="clabel">직접<br>조작</div>
+        <div class="cbody"><p class="hands-on">
+          <b>전자총을 누르면</b> 전자를 쏘기 시작하고 다시 누르면 멈춥니다.
+          슬릿 판의 <b>위·아래 판을 끌어</b> 간격 <i>d</i> 를 넓히거나 좁히고,
+          <b>관측 장치를 눌러</b> 어느 슬릿을 지났는지 감시를 켜고 끕니다.
+          전자총 위 <b>＋ · －</b> 로 가속 전압을 바꾸면 λ 가 0.1 씩 달라집니다.
+        </p></div>
+      </div>
+      <div class="control">
         <div class="clabel">전자 쏘기</div>
-        <button class="power" id="runBtn">▶ 발사</button>
+        <button class="power${state.running ? ' run' : ''}" id="runBtn">${
+          state.running ? '발사 중…' : '▶ 발사'}</button>
       </div>
       <div class="control">
         <div class="clabel">스크린<br>지우기</div>
@@ -325,23 +593,19 @@ const MatterwaveScene = (() => {
   }
 
   function bindControls(root, onChange) {
-    const after = () => { reset(); onChange(); };
+    onChangeCb = onChange;      // 3D 에서 조작해도 측정값이 갱신되도록
+    // 조건이 바뀌면 스크린을 비우고 다시 쌓는다 (3D 조작과 같은 길로 지나간다)
+    const after = () => applyChange(true);
     LabUI.bindSlider(root, 'lambda', state, 'lambda', (v) => `${(+v).toFixed(1)}`, after);
     LabUI.bindSlider(root, 'dSlit', state, 'dSlit', (v) => `${(+v).toFixed(1)}`, after);
     LabUI.bindOpts(root, 'rate', state, 'rate', onChange);
-    LabUI.bindOpts(root, 'observe', state, 'observe', () => { reset(); onChange(); });
+    LabUI.bindOpts(root, 'observe', state, 'observe', after);
     const run = root.querySelector('#runBtn');
-    run.addEventListener('click', () => {
-      state.running = !state.running;
-      run.textContent = state.running ? '발사 중…' : '▶ 발사';
-      run.classList.toggle('run', state.running);
-      onChange();
-    });
+    run.addEventListener('click', toggleRun);       // 표시는 syncPanel 이 맞춘다
     root.querySelector('#resetBtn').addEventListener('click', () => {
-      reset();
-      run.textContent = '▶ 발사';
-      run.classList.remove('run');
+      reset();                                      // 발사도 멈추고 처음 상태로
       onChange();
+      syncPanel();
     });
   }
 

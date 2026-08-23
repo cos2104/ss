@@ -10,9 +10,10 @@
 const ElectrostaticScene = (() => {
   const B = () => BABYLON;
 
-  let scene, camera;
+  let scene, camera, canvasRef;
   let ballA, ballB, strawL, strawR, texA, texB, standG;
   let waterG, balloon, drops = [], faucet;
+  let stepQ, stepSign;                 // 3D 화면의 ＋ / － 단추
   let placed = {};
 
   const state = {
@@ -42,6 +43,7 @@ const ElectrostaticScene = (() => {
   /* ══ 장면 ═══════════════════════════════════ */
   function create(engine, canvas) {
     scene = new (B().Scene)(engine);
+    canvasRef = canvas;
     scene.clearColor = B().Color4.FromHexString('#c9dff2ff');
 
     camera = new (B().ArcRotateCamera)(
@@ -66,7 +68,9 @@ const ElectrostaticScene = (() => {
 
     buildBalls();
     buildWater();
+    buildSteppers();
     buildPlaceholders();
+    setupPointer(canvas);
 
     // 교과서 그림 액자 (배경 소품)
     LabUI.addPoster(scene, '../assets/thumbs/electrostatic.jpg', { x: -8, y: 0, z: 5, ry: 0.3 });
@@ -247,6 +251,189 @@ const ElectrostaticScene = (() => {
     t.hasAlpha = true; t.update();
   }
 
+  /* ══ 3D 화면에서 직접 조작 ═══════════════════
+     · 대전된 빨대를 끌어 도체 공에 가까이 대거나 옆으로 치운다
+     · 공 B 를 끌어 A 에 붙였다 뗀다 — 접촉과 분리를 손으로 한다
+     · 두 번째 빨대를 끌어와 대면 A·B 가 어떻게 대전되었는지 확인한다
+     · 물줄기 모드에서는 풍선을 끌어 가까이 대고, ＋ / － 로 부호를 바꾼다   */
+  let onChangeCb = null;        // 3D 에서 조작해도 측정값이 갱신되도록
+  let drag = null;              // { key, y, off }
+  // 손으로 옮겨 둔 자리 — null 이면 그 단계의 «기본 자리»를 쓴다
+  const hands = { strawX: null, strawRX: null, ballBX: null };
+
+  const NEAR_X = -4.2;          // 빨대가 이보다 오른쪽이면 «공에 가까이 댄» 것
+  const R_NEAR_X = 4.4;         // 두 번째 빨대가 이보다 왼쪽이면 «가까이 댄» 것
+  const TOUCH_GAP = 1.35;       // 두 공의 중심 간격이 이보다 좁으면 «닿은» 것
+
+  function buildSteppers() {
+    stepQ = LabUI.makeStepper(scene, 'Q');        // btnAddQ / btnSubQ — 빨대 대전량
+    stepSign = LabUI.makeStepper(scene, 'Sign');  // btnAddSign / btnSubSign — 풍선 부호
+  }
+
+  /** ＋ / － 단추 자리를 다시 잡는다 (layout 에서 매번 부른다) */
+  function layoutHands(all) {
+    const balls = state.mode === 'balls';
+    if (stepQ) {
+      const on = all && balls;
+      stepQ.setEnabled(on);
+      // 빨대 «위쪽·앞쪽»에 띄워 빨대 몸통·(−) 이름표·도체 공·실을 모두 비껴간다
+      if (on) stepQ.place(strawL.position.x, 4.0, -0.9, 1.0);
+    }
+    if (stepSign) {
+      const on = all && !balls;
+      stepSign.setEnabled(on);
+      // 풍선 꼭대기(y ≈ 3.85) 위, 수도꼭지(y ≈ 5.3) 아래 — 앞쪽으로 조금 당겨 둔다.
+      // 사이 간격은 0.75 — 이보다 벌리면 가장 가까이(0.7) 댔을 때 ＋ 단추가 물줄기를 가린다
+      if (on) stepSign.place(balloon.position.x, 4.6, -0.9, 0.75);
+    }
+  }
+
+  /** 3D 에서 값을 바꾼 뒤 — 측정값·그래프·아래 조작 막대를 함께 갱신한다 */
+  function refresh() {
+    if (onChangeCb) onChangeCb();   // 껍데기가 update() 까지 불러 준다
+    else update();
+    syncPanel();
+  }
+
+  /** 아래 조작 막대를 3D 에서 바꾼 값에 맞춘다 */
+  function syncPanel() {
+    const put = (id, val, txt) => {
+      const el = document.querySelector('#' + id);
+      const out = document.querySelector('#' + id + 'Out');
+      if (el) el.value = val;
+      if (out) out.textContent = txt;
+    };
+    const mark = (key, val) => {
+      document.querySelectorAll('[data-' + key + ']').forEach((b) => {
+        b.classList.toggle('on', b.getAttribute('data-' + key) === String(val));
+      });
+    };
+    if (state.mode === 'balls') {
+      put('strawQ', state.strawQ, `×${state.strawQ.toFixed(1)}`);
+      mark('step', state.step);
+    } else {
+      put('balloonDist', state.balloonDist, `${state.balloonDist.toFixed(1)}`);
+      mark('balloonSign', state.balloonSign);
+    }
+  }
+
+  /** 빨대를 면에 더/덜 문지른다 — 슬라이더와 같은 0.3 ~ 1.5 범위 */
+  function bumpQ(d) {
+    const v = Math.max(0.3, Math.min(1.5, Math.round((state.strawQ + d * 0.1) * 10) / 10));
+    if (v === state.strawQ) return;
+    state.strawQ = v;
+    refresh();
+  }
+
+  /** 풍선을 (+) 또는 (−) 로 대전시킨다 */
+  function setSign(s) {
+    if (state.balloonSign === s) return;
+    state.balloonSign = s;
+    refresh();
+  }
+
+  const strawXNow = () => (hands.strawX !== null ? hands.strawX : strawL.position.x);
+  const strawRXNow = () => (hands.strawRX !== null ? hands.strawRX : strawR.position.x);
+  const ballBXNow = () => (hands.ballBX !== null ? hands.ballBX : ballB.position.x);
+
+  /** 손으로 옮긴 자리를 보고 «해 보기 16쪽»의 어느 단계인지 정한다 */
+  function reStep() {
+    const near = strawXNow() > NEAR_X;
+    const apart = (ballBXNow() - ballA.position.x) >= TOUCH_GAP;
+    const rNear = strawRXNow() <= R_NEAR_X;
+    let s = state.step;
+    if (s === 1) {
+      if (!near) s = 2;                       // 빨대를 치우면 중성으로 돌아가 접촉시킨다
+    } else if (s === 2) {
+      if (near && apart) s = 3;               // 빨대를 댄 채 떼어야 반대로 대전된다
+    } else if (s === 3) {
+      if (!apart) s = 2;                      // 다시 붙이면 중화되어 ② 로 돌아간다
+      else if (rNear) s = 4;                  // 두 번째 빨대를 대면 확인 단계
+    } else if (!rNear) {
+      s = 3;                                  // 두 번째 빨대를 치우면 ③ 으로
+    }
+    if (s === state.step) return;
+    state.step = s;
+    // 단계가 바뀌면 «지금 잡고 있는 것»만 빼고 그 단계의 표준 자리로 정리한다
+    ['strawX', 'strawRX', 'ballBX'].forEach((k) => {
+      if (!drag || drag.key !== k) hands[k] = null;
+    });
+  }
+
+  /** 화면 위 한 점을 «높이 y 인 수평면» 위로 옮겨 x 좌표를 얻는다 */
+  function planeX(y) {
+    const ray = scene.createPickingRay(scene.pointerX, scene.pointerY, null, camera);
+    const plane = B().Plane.FromPositionAndNormal(
+      new (B().Vector3)(0, y, 0), new (B().Vector3)(0, 1, 0));
+    const d = ray.intersectsPlane(plane);
+    if (d === null || d < 0) return null;
+    return ray.origin.add(ray.direction.scale(d)).x;
+  }
+
+  /** 집힌 메시가 어떤 부품인지 */
+  function grabKey(nm) {
+    if (/^esStrawL/.test(nm)) return 'strawX';
+    if (/^esStrawR/.test(nm)) return 'strawRX';
+    if (nm === 'esBallB' || nm === 'esStrB') return 'ballBX';
+    if (/^esBal[SL]$/.test(nm)) return 'balloon';
+    return null;
+  }
+
+  function setupPointer(canvas) {
+    scene.onPointerObservable.add((pi) => {
+      const T = B().PointerEventTypes;
+      const m = pi.pickInfo && pi.pickInfo.pickedMesh;
+
+      if (pi.type === T.POINTERDOWN) {
+        if (!allPlaced()) return;             // 실험을 다 차리기 전에는 만지지 못한다
+        const nm = m ? m.name : '';
+        if (nm === 'btnAddQ') { bumpQ(+1); return; }
+        if (nm === 'btnSubQ') { bumpQ(-1); return; }
+        if (nm === 'btnAddSign') { setSign(1); return; }
+        if (nm === 'btnSubSign') { setSign(-1); return; }
+        const key = grabKey(nm);
+        if (!key) return;
+        if ((state.mode === 'balls') === (key === 'balloon')) return;   // 모드에 맞는 것만
+        const pt = pi.pickInfo.pickedPoint;
+        const y = pt ? pt.y : 2.2;            // 잡은 지점의 높이에서 잰다
+        const px = planeX(y);
+        if (px === null) return;
+        const cur = key === 'balloon' ? balloon.position.x
+          : key === 'strawX' ? strawL.position.x
+            : key === 'strawRX' ? strawR.position.x : ballB.position.x;
+        drag = { key, y, off: px - cur };     // 누른 순간의 어긋남을 저장해 «튀지» 않게 한다
+        camera.detachControl();
+        return;
+      }
+
+      if (pi.type === T.POINTERMOVE && drag) {
+        const px = planeX(drag.y);
+        if (px === null) return;
+        const x = px - drag.off;
+        if (drag.key === 'balloon') {
+          // 슬라이더와 같은 0.7 ~ 2.6 범위 (풍선 x = −(거리 + 0.8))
+          const v = Math.max(0.7, Math.min(2.6, Math.round((-x - 0.8) * 10) / 10));
+          if (v === state.balloonDist) return;
+          state.balloonDist = v;
+          refresh();
+          return;
+        }
+        // 오른쪽 끝은 «① 접근» 의 기본 자리(−2.2) 까지 — 더 밀면 빨대가 공 A 를 뚫고 들어간다
+        if (drag.key === 'strawX') hands.strawX = Math.max(-6.4, Math.min(-2.2, x));
+        else if (drag.key === 'strawRX') hands.strawRX = Math.max(1.8, Math.min(6.4, x));
+        else hands.ballBX = Math.max(ballA.position.x + 1.02, Math.min(3.4, x));
+        reStep();
+        refresh();
+        return;
+      }
+
+      if (pi.type === T.POINTERUP && drag) {
+        drag = null;
+        camera.attachControl(canvas, true);
+      }
+    });
+  }
+
   /* ── 배치 자리 ──────────────────────────────── */
   const holders = {};
   function buildPlaceholders() {
@@ -275,6 +462,9 @@ const ElectrostaticScene = (() => {
   function resetTools() {
     placed = {};
     tools.forEach((t) => { placed[t.id] = false; });
+    // 끌던 도중에 «다시 배치» 를 눌러도 카메라가 잠긴 채로 남지 않게 한다
+    if (drag && camera && canvasRef) camera.attachControl(canvasRef, true);
+    drag = null;
     applyPlacement();
   }
   function placeTool(id) { placed[id] = true; applyPlacement(); }
@@ -295,6 +485,7 @@ const ElectrostaticScene = (() => {
   function reset() {
     sim = { t: 0 };
     state.step = 1;
+    hands.strawX = null; hands.strawRX = null; hands.ballBX = null;
     layout();
   }
 
@@ -339,6 +530,7 @@ const ElectrostaticScene = (() => {
       drops.forEach((dp) => dp.m.setEnabled(false));
       const sink = scene.getMeshByName('esSink');
       if (sink) sink.setEnabled(!!placed.faucetT);
+      layoutHands(false);
       return;
     }
     (standG._frame || []).forEach((n) => n.setEnabled(true));
@@ -350,8 +542,9 @@ const ElectrostaticScene = (() => {
     if (sinkM) sinkM.setEnabled(true);
 
     standG.setEnabled(balls);
-    strawL.setEnabled(balls && (state.step === 1 || state.step === 3 || state.step === 4));
-    strawR.setEnabled(balls && state.step === 4);
+    // 빨대는 손으로 집을 수 있도록 늘 실험대 위에 둔다 (치운 단계에서는 옆으로 물려 놓는다)
+    strawL.setEnabled(balls);
+    strawR.setEnabled(balls && (state.step === 3 || state.step === 4));
     waterG.setEnabled(!balls);
 
     if (balls) {
@@ -363,6 +556,9 @@ const ElectrostaticScene = (() => {
         str.position.set(x0 + Math.sin(tilt) * strLen / 2, barY - Math.cos(tilt) * strLen / 2, 0);
         ball.position.set(x0 + Math.sin(tilt) * strLen, barY - Math.cos(tilt) * strLen - 0.5, 0);
       };
+      // 단계마다 빨대의 «기본 자리» — 아래에서 단계별로 덮어쓴다
+      strawL.position.set(-5.6, 2.2, 0);
+      strawR.position.set(5.6, 2.2, 0);
       if (state.step === 1) {
         // 빨대가 왼쪽에서 접근 → A 유도, 끌려감 (왼쪽으로 기움)
         ballB.setEnabled(false);
@@ -400,10 +596,20 @@ const ElectrostaticScene = (() => {
         drawCharges(texA, 'plus');
         drawCharges(texB, 'minus');
       }
+      // 손으로 잡아 옮긴 부품은 그 자리를 지킨다 (잡자마자 제자리로 튀지 않게)
+      if (hands.strawX !== null) strawL.position.x = hands.strawX;
+      if (hands.strawRX !== null) strawR.position.x = hands.strawRX;
+      if (hands.ballBX !== null && ballB.isEnabled()) {
+        // 단계가 바뀌면 A 도 자리를 옮기므로, 두 공이 서로 파고들지 않도록
+        // 지금의 A 를 기준으로 다시 한 번 «지름만큼» 떨어뜨린다
+        hands.ballBX = Math.max(ballA.position.x + 1.02, Math.min(3.4, hands.ballBX));
+        hang(standG._str1, ballB, hands.ballBX, 0);
+      }
     } else {
       drawBalloonLabel();
       balloon.position.set(-state.balloonDist - 0.8, 3.0, 0);
     }
+    layoutHands(true);
   }
 
   function tick(dt) {
@@ -454,9 +660,28 @@ const ElectrostaticScene = (() => {
       { v: 'balls', t: '도체 공 (16쪽)' }, { v: 'water', t: '물줄기 휘기 (17쪽)' },
     ], state.mode, 1);
 
+    const handsBalls = `
+      <div class="control">
+        <div class="clabel">직접<br>조작</div>
+        <div class="cbody"><p class="hands-on">
+          <b>빨대를 끌어</b> 공에 가까이 대거나 옆으로 치우고, <b>공 B 를 끌어</b> A 에 붙였다 뗍니다
+          (빨대를 댄 채로 떼어야 반대로 대전됩니다). 마지막에 <b>오른쪽 빨대를 끌어와</b> 확인하고,
+          빨대 위 <b>＋ · －</b> 로 문지른 정도(대전량)를 바꿉니다.
+        </p></div>
+      </div>`;
+    const handsWater = `
+      <div class="control">
+        <div class="clabel">직접<br>조작</div>
+        <div class="cbody"><p class="hands-on">
+          <b>풍선을 끌어</b> 물줄기에 가까이 대 보고, 풍선 위 <b>＋ · －</b> 를 눌러
+          풍선을 (+) 또는 (−) 로 대전시켜 봅니다.
+        </p></div>
+      </div>`;
+
     if (state.mode === 'balls') {
       return `
         ${modeBtns}
+        ${handsBalls}
         ${LabUI.opts('실험 단계', 'step', [
           { v: 1, t: '① 접근' }, { v: 2, t: '② 접촉' },
           { v: 3, t: '③ 분리' }, { v: 4, t: '④ 확인' },
@@ -470,6 +695,7 @@ const ElectrostaticScene = (() => {
     }
     return `
       ${modeBtns}
+      ${handsWater}
       ${LabUI.opts('풍선의 전하', 'balloonSign', [
         { v: -1, t: '(−) 로 대전' }, { v: 1, t: '(+) 로 대전' },
       ], state.balloonSign, 1)}
@@ -482,6 +708,8 @@ const ElectrostaticScene = (() => {
   }
 
   function bindControls(root, onChange) {
+    onChangeCb = onChange;      // 3D 에서 조작해도 측정값이 갱신되도록
+
     root.querySelectorAll('[data-mode]').forEach((b) => b.addEventListener('click', () => {
       state.mode = b.dataset.mode;
       reset();
@@ -491,7 +719,11 @@ const ElectrostaticScene = (() => {
     }));
 
     if (state.mode === 'balls') {
-      LabUI.bindOpts(root, 'step', state, 'step', () => { layout(); onChange(); });
+      LabUI.bindOpts(root, 'step', state, 'step', () => {
+        // 아래 단추로 단계를 고르면 손으로 옮겨 둔 자리는 표준 배치로 정리한다
+        hands.strawX = null; hands.strawRX = null; hands.ballBX = null;
+        layout(); onChange();
+      });
       LabUI.bindSlider(root, 'strawQ', state, 'strawQ', (v) => `×${(+v).toFixed(1)}`, () => { layout(); onChange(); });
     } else {
       LabUI.bindOpts(root, 'balloonSign', state, 'balloonSign', () => { layout(); onChange(); });

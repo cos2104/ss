@@ -32,6 +32,14 @@ const GenrelScene = (() => {
   let clockG, clockTexA, clockTexB, bhMesh;
   let placed = {};
 
+  /* ── 3D 화면에서 직접 조작하기 ── */
+  let canvasRef = null;          // 끌기 도중 카메라를 잠갔다 푸는 데 쓴다
+  let onChangeCb = null;         // 3D 에서 조작해도 측정값이 갱신되도록
+  let ground, srcMesh, srcGlow, planetMat, clockPlaneA;
+  let stepSc = null, stepGv = null, scTagPlane = null, scTagTex = null, scTagLast = '';
+  let elevDrag = null, srcDrag = null, clockDrag = null;
+  let srcY = 2.6;                // 빛 모드 — 광원(빛이 출발하는) 높이
+
   const state = {
     mode: 'elevator',      // 'elevator' | 'light' | 'clock'
     scenario: 'rest',
@@ -89,6 +97,9 @@ const GenrelScene = (() => {
     buildClocks();
     buildProps();
     buildPlaceholders();
+    buildHands();
+    canvasRef = canvas;
+    setupPointer(canvas);
 
     // 교과서 그림 액자 (배경 소품)
     LabUI.addPoster(scene, '../assets/thumbs/genrel.jpg', { x: -8, y: 0, z: 6.5, ry: 0.3 });
@@ -136,8 +147,8 @@ const GenrelScene = (() => {
       r.material = mat('grRailM' + i, '#232b3a');
       r.parent = shaft;
     });
-    // 바닥은 항상 보이는 기본 배경
-    const ground = B().MeshBuilder.CreateGround('grGround', { width: 26, height: 16 }, scene);
+    // 바닥 — 승강기 모드에서만 보인다 (빛·시계 모드는 우주 공간이다)
+    ground = B().MeshBuilder.CreateGround('grGround', { width: 26, height: 16 }, scene);
     ground.material = mat('grGroundMat', '#4a5468');
 
     elevator = new (B().TransformNode)('grElev', scene);
@@ -216,12 +227,30 @@ const GenrelScene = (() => {
     src.position.set(-3.6, 2.6, 0.6);
     src.material = emat('grSrcMat', '#ffd84a');
     src.parent = rocket;
+    srcMesh = src;
+    // 램프 불빛 — 빛이 나오는 곳임을 보여 주면서, 잡아 끌기 쉬운 손잡이가 된다
+    srcGlow = B().MeshBuilder.CreateSphere('grSrcGlow', { diameter: 0.95, segments: 12 }, scene);
+    srcGlow.position.set(-3.6, 2.6, 0.6);
+    srcGlow.material = emat('grSrcGlowMat', '#ffd84a', 0.16);
+    srcGlow.parent = rocket;
     // 로켓 엔진 불꽃
     const flame = B().MeshBuilder.CreateCylinder('grFlame', { height: 1.1, diameterTop: 1.6, diameterBottom: 0.3 }, scene);
     flame.position.y = -0.75;
     flame.material = emat('grFlameMat', '#ff8a3c', 0.85);
     flame.parent = rocket;
     rocket._flame = flame;
+    // 엔진 노즐 — 눌러서 엔진을 켜고 끈다 ((나) 가속 ↔ (가) 정지)
+    const nozzle = B().MeshBuilder.CreateCylinder('grNozzle', { height: 0.6, diameterTop: 0.9, diameterBottom: 1.4 }, scene);
+    nozzle.position.y = -0.25;
+    nozzle.material = mat('grNozzleMat', '#4a5468', '#9aa8c0', 64);
+    nozzle.parent = rocket;
+    // 행성 — 눌러서 (다) 중력 속에 정지한 상태로 바꾼다 (그 밖에는 희미하게 보인다)
+    const planet = B().MeshBuilder.CreateSphere('grPlanet', { diameter: 13, segments: 24 }, scene);
+    planet.position.set(0, -9.2, 0);
+    planetMat = mat('grPlanetMat', '#5a6f8a', '#9ab0cc', 48);
+    planetMat.alpha = 0.2;
+    planet.material = planetMat;
+    planet.parent = rocket;
 
     photon = B().MeshBuilder.CreateSphere('grPhoton', { diameter: 0.3 }, scene);
     photon.material = emat('grPhotonMat', '#ffd84a');
@@ -251,6 +280,31 @@ const GenrelScene = (() => {
     props.clockT = mk('C', 4.8, -2.6, '#3a2c22');
   }
 
+  /** 3D 화면에서 누르는 ＋ / － 단추와 «지금 상황» 이름표 */
+  function buildHands() {
+    stepSc = LabUI.makeStepper(scene, 'Sc');   // 승강기 상태를 차례대로 넘긴다
+    stepGv = LabUI.makeStepper(scene, 'Gv');   // 천체의 중력 배율
+    const [p, t] = texPlane('grScTag', 3.6, 0.9, 460, 116);
+    scTagPlane = p; scTagTex = t;
+  }
+
+  /** ＋ / － 단추 위의 이름표 — 글자가 바뀔 때만 다시 그린다 */
+  function drawScTag() {
+    const txt = SCENARIOS[state.scenario].name;
+    if (txt === scTagLast) return;
+    scTagLast = txt;
+    const ctx = scTagTex.getContext();
+    ctx.clearRect(0, 0, 460, 116);
+    ctx.fillStyle = 'rgba(26,34,51,.9)';
+    ctx.beginPath(); ctx.roundRect(6, 24, 448, 68, 20); ctx.fill();
+    ctx.strokeStyle = '#5a9df0'; ctx.lineWidth = 3; ctx.stroke();
+    ctx.fillStyle = '#e8ecf4';
+    ctx.font = 'bold 30px "Noto Sans KR", sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(txt, 230, 58);
+    scTagTex.update();
+  }
+
   /** 시계 모드 — 중력 시간 지연 */
   function buildClocks() {
     clockG = new (B().TransformNode)('grClocks', scene);
@@ -265,15 +319,23 @@ const GenrelScene = (() => {
     ring.material = emat('grBHRingMat', '#f0a53c', 0.9);
     ring.parent = clockG;
 
-    const mk = (x) => {
-      const [p, t] = texPlane('grClock' + x, 2.6, 2.6, 300, 300);
+    const mk = (nm, x) => {
+      const [p, t] = texPlane(nm, 2.6, 2.6, 300, 300);
       p.position.set(x, 3.4, 0);
       p.parent = clockG;
-      return t;
+      return [p, t];
     };
-    clockTexA = mk(-4.2);   // 천체 표면 (중력 큼)
-    clockTexB = mk(4.6);    // 먼 우주 (중력 작음)
+    // 왼쪽 시계는 끌어서 천체에 가까이·멀리 놓는다 (가까울수록 중력이 크다)
+    const [pa, ta] = mk('grClockA', clockXof(state.gFactor));
+    clockPlaneA = pa; clockTexA = ta;   // 천체 가까이 (중력 큼)
+    clockTexB = mk('grClockB', 4.6)[1]; // 먼 우주 (중력 작음)
   }
+
+  /* ── 시계와 천체 사이 거리 ↔ 중력 배율 (0 ~ 10) ── */
+  const CLK_NEAR = -4.2, CLK_FAR = -9.4;
+  const clockXof = (g) => CLK_NEAR + ((10 - g) / 10) * (CLK_FAR - CLK_NEAR);
+  const gOfClockX = (x) =>
+    Math.max(0, Math.min(10, Math.round(10 - ((x - CLK_NEAR) / (CLK_FAR - CLK_NEAR)) * 10)));
 
   function drawClock(tex, t, label, hex) {
     const ctx = tex.getContext();
@@ -367,6 +429,9 @@ const GenrelScene = (() => {
   function resetTools() {
     placed = {};
     tools.forEach((t) => { placed[t.id] = false; });
+    // 끌던 도중에 다시 시작해도 카메라 조작이 잠긴 채로 남지 않게 한다
+    if ((elevDrag || srcDrag || clockDrag) && camera && canvasRef) camera.attachControl(canvasRef, true);
+    elevDrag = null; srcDrag = null; clockDrag = null;
     applyPlacement();
   }
   function placeTool(id) { placed[id] = true; applyPlacement(); }
@@ -390,8 +455,8 @@ const GenrelScene = (() => {
       // 승강기
       y: 0, v: SCENARIOS[state.scenario].v0 || 0, t: 0, done: false,
       history: [],           // {t, N}
-      // 빛
-      px: -3.6, py: 2.6, rocketV: 0, rocketY: 0, lightTrail: [],
+      // 빛 (py 는 끌어 놓은 광원 높이에서 출발한다)
+      px: -3.6, py: srcY, rocketV: 0, rocketY: 0, lightTrail: [],
       // 시계
       tA: 0, tB: 0,
     };
@@ -418,6 +483,10 @@ const GenrelScene = (() => {
       clockG.setEnabled(false);
       if (props.phoneT) props.phoneT.setEnabled(!!placed.phoneT);
       if (props.clockT) props.clockT.setEnabled(!!placed.clockT);
+      if (ground) ground.setEnabled(true);
+      if (stepSc) stepSc.setEnabled(false);
+      if (stepGv) stepGv.setEnabled(false);
+      if (scTagPlane) scTagPlane.setEnabled(false);
       return;
     }
     scaleBox.setEnabled(true);
@@ -429,6 +498,16 @@ const GenrelScene = (() => {
     rocket.setEnabled(li);
     photon.setEnabled(li);
     clockG.setEnabled(cl);
+    if (ground) ground.setEnabled(el);      // 빛·시계 모드는 우주 공간이다
+
+    // 3D 조작 손잡이 — 승강기·이름표와 겹치지 않도록 옆으로 넉넉히 띄운다
+    if (stepSc) { stepSc.place(3.8, 2.5, -1.2, 0.85); stepSc.setEnabled(el); }
+    if (scTagPlane) {
+      scTagPlane.position.set(3.8, 3.6, -1.2);
+      scTagPlane.setEnabled(el);
+      if (el) drawScTag();
+    }
+    if (stepGv) { stepGv.place(0, 5.6, 0, 0.95); stepGv.setEnabled(cl); }
 
     if (el) {
       elevator.position.y = sim.y * M;
@@ -442,6 +521,9 @@ const GenrelScene = (() => {
     } else if (li) {
       photon.position.set(sim.px, sim.py - sim.rocketY, 0.6);
       rocket._flame.setEnabled(state.lightCase === 'accel');
+      if (srcMesh) srcMesh.position.y = srcY;                 // 끌어 놓은 광원 높이
+      if (srcGlow) srcGlow.position.y = srcY;                 // 불빛도 함께 따라간다
+      if (planetMat) planetMat.alpha = state.lightCase === 'gravity' ? 1 : 0.2;
       // 자취 (우주선 기준 좌표)
       if (photonTrailPts.length > 1) {
         if (photonTrail) photonTrail.dispose();
@@ -451,7 +533,9 @@ const GenrelScene = (() => {
         photonTrail.color = B().Color3.FromHexString('#ffd84a');
       }
     } else if (cl) {
-      drawClock(clockTexA, sim.tA, '천체 표면 (중력 큼)', '#e8577a');
+      // 시계는 중력 배율에 맞는 거리에 놓인다 (가까울수록 중력이 크다)
+      if (clockPlaneA) clockPlaneA.position.x = clockXof(state.gFactor);
+      drawClock(clockTexA, sim.tA, '천체 가까이 (중력 큼)', '#e8577a');
       drawClock(clockTexB, sim.tB, '먼 우주 (중력 작음)', '#5a9df0');
     }
   }
@@ -520,6 +604,214 @@ const GenrelScene = (() => {
     else layout();
   }
 
+  /* ══ 3D 화면에서 직접 조작 ═══════════════════ */
+
+  /** 3D 에서 값을 바꾼 뒤 — 측정값·그래프와 아래 조작 막대를 함께 갱신한다 */
+  function apply() {
+    if (onChangeCb) onChangeCb();   // 껍데기가 update() 까지 불러 준다
+    else update();
+    syncPanel();
+  }
+
+  /** 아래 조작 막대를 3D 에서 바꾼 값에 맞춘다 */
+  function syncPanel() {
+    const labels = { elevator: '▶ 출발', light: '▶ 발사', clock: '▶ 시작' };
+    const run = document.querySelector('#runBtn');
+    if (run) {
+      run.textContent = state.running ? '진행 중' : labels[state.mode];
+      run.classList.toggle('run', state.running);
+    }
+    document.querySelectorAll('[data-scenario]').forEach((b) => {
+      b.classList.toggle('on', b.getAttribute('data-scenario') === state.scenario);
+    });
+    document.querySelectorAll('[data-lightCase]').forEach((b) => {
+      b.classList.toggle('on', b.getAttribute('data-lightCase') === state.lightCase);
+    });
+    const gf = document.querySelector('#gFactor');
+    const go = document.querySelector('#gFactorOut');
+    if (gf) gf.value = state.gFactor;
+    if (go) go.textContent = `×${state.gFactor}`;
+  }
+
+  /** ＋ · － 로 표(해 보기 36쪽)의 승강기 상태를 차례대로 넘긴다 */
+  const SC_ORDER = Object.keys(SCENARIOS);
+  function stepScenario(d) {
+    const i = SC_ORDER.indexOf(state.scenario);
+    const v = Math.max(0, Math.min(SC_ORDER.length - 1, i + d));
+    if (v === i) return;
+    state.scenario = SC_ORDER[v];
+    reset();
+    apply();
+  }
+
+  /** 체중계 눈금이 똑같은 «반대편 상황» (지구 ↔ 우주) — 등가 원리 짝 */
+  const EQUIV = {
+    rest: 'spaceAcc', upConst: 'spaceAcc', spaceAcc: 'rest',
+    freefall: 'spaceRest', spaceRest: 'freefall',
+  };
+  function flipEquiv() {
+    const to = EQUIV[state.scenario];
+    if (!to) return;            // 가속·감속 중에는 짝이 되는 상황이 없다
+    state.scenario = to;
+    reset();
+    apply();
+  }
+
+  /** 줄이 끊어져 그 높이에서 자유 낙하한다 */
+  function dropFrom(y) {
+    state.scenario = 'freefall';
+    reset();
+    sim.y = Math.max(0.6, Math.min(SHAFT_H, y));
+    sim.v = 0;
+    state.running = true;
+    apply();
+  }
+
+  /** 케이블을 누르면 줄이 끊어진다 (바닥에 있으면 통로 꼭대기에서 떨어진다) */
+  function cutCable() {
+    dropFrom(sim && sim.y > 0.6 ? sim.y : SHAFT_H);
+  }
+
+  /** 빛 모드 — 광원을 끌어 빛이 출발하는 높이를 바꾼다 (우주선 안쪽으로 제한) */
+  function setSrcY(y) {
+    const v = Math.max(1.2, Math.min(3.2, Math.round(y * 20) / 20));
+    if (v === srcY) return;
+    srcY = v;
+    if (sim) {                  // 광원을 옮기면 빛을 처음부터 다시 쏜다
+      sim.py = srcY; sim.px = -3.6; sim.rocketY = 0; sim.t = 0;
+      photonTrailPts = [];
+      if (photonTrail) { photonTrail.dispose(); photonTrail = null; }
+    }
+    apply();
+  }
+
+  /** 엔진 노즐·행성을 눌러 우주선의 상태를 바꾼다 */
+  function setLightCase(c) {
+    if (c === state.lightCase) return;
+    state.lightCase = c;
+    reset();
+    apply();
+  }
+
+  /** 시계를 옮기거나 ＋ · － 를 눌러 중력 배율을 바꾼다 (0 ~ 10, 슬라이더와 같은 범위) */
+  function setGrav(g) {
+    const v = Math.max(0, Math.min(10, Math.round(g)));
+    if (v === state.gFactor) return;
+    state.gFactor = v;          // 옮긴 뒤부터 다르게 간다 — 잰 시간은 그대로 둔다
+    apply();
+  }
+
+  /** 화면 위 한 점을 주어진 평면 위의 세계 좌표로 바꾼다 */
+  function planePoint(origin, normal) {
+    const ray = scene.createPickingRay(scene.pointerX, scene.pointerY, null, camera);
+    const plane = B().Plane.FromPositionAndNormal(origin, normal);
+    const d = ray.intersectsPlane(plane);
+    if (d === null || d < 0) return null;   // 면과 거의 나란히 보면 무시한다
+    const pt = ray.origin.add(ray.direction.scale(d));
+    // 화면이 아직 그려지기 전이면 좌표가 어긋날 수 있으므로 걸러 낸다
+    return (Number.isFinite(pt.x) && Number.isFinite(pt.y)) ? pt : null;
+  }
+
+  function setupPointer(canvas) {
+    scene.onPointerObservable.add((pi) => {
+      const T = B().PointerEventTypes;
+      const mesh = pi.pickInfo && pi.pickInfo.pickedMesh;
+      const nm = mesh ? mesh.name : '';
+      const Vec = B().Vector3;
+
+      if (pi.type === T.POINTERDOWN) {
+        if (!allPlaced() || !sim) return;
+
+        if (state.mode === 'elevator') {
+          if (nm === 'btnAddSc') { stepScenario(+1); return; }
+          if (nm === 'btnSubSc') { stepScenario(-1); return; }
+          if (nm === 'grCable') { cutCable(); return; }
+          if (/^(grPerson|grBody|grHead|grThought)/.test(nm)) { flipEquiv(); return; }
+          if (/^(grFloor|grBack|grSide|grTop|grScale)/.test(nm)) {
+            const hit = pi.pickInfo.pickedPoint;
+            const pt = planePoint(hit, new Vec(0, 0, 1));
+            if (!pt) return;
+            // 누른 순간의 어긋남을 저장해 두어야 잡자마자 튀지 않는다
+            elevDrag = { off: elevator.position.y - pt.y, z: hit.z, lifted: false };
+            state.running = false;
+            camera.detachControl();
+            apply();
+          }
+          return;
+        }
+
+        if (state.mode === 'light') {
+          if (nm === 'grSrc' || nm === 'grSrcGlow') {
+            const hit = pi.pickInfo.pickedPoint;
+            const pt = planePoint(hit, new Vec(0, 0, 1));
+            if (!pt) return;
+            srcDrag = { off: srcY - pt.y, z: hit.z };
+            camera.detachControl();
+            return;
+          }
+          if (nm === 'grNozzle' || nm === 'grFlame') {
+            setLightCase(state.lightCase === 'accel' ? 'rest' : 'accel');
+            return;
+          }
+          if (nm === 'grPlanet') {
+            setLightCase(state.lightCase === 'gravity' ? 'rest' : 'gravity');
+          }
+          return;
+        }
+
+        // 시계 모드
+        if (nm === 'btnAddGv') { setGrav(state.gFactor + 1); return; }
+        if (nm === 'btnSubGv') { setGrav(state.gFactor - 1); return; }
+        if (nm === 'grClockA' && clockPlaneA) {
+          const hit = pi.pickInfo.pickedPoint;
+          const pt = planePoint(hit, new Vec(0, 0, 1));
+          if (!pt) return;
+          clockDrag = { off: clockPlaneA.position.x - pt.x, z: hit.z };
+          camera.detachControl();
+        }
+        return;
+      }
+
+      if (pi.type === T.POINTERMOVE) {
+        if (elevDrag) {
+          const pt = planePoint(new Vec(0, 0, elevDrag.z), new Vec(0, 0, 1));
+          if (!pt || !sim) return;
+          const y = Math.max(0, Math.min(SHAFT_H * M, pt.y + elevDrag.off));
+          sim.y = y / M;
+          sim.v = 0;
+          if (sim.y > 0.6) elevDrag.lifted = true;
+          layout();
+        } else if (srcDrag) {
+          const pt = planePoint(new Vec(0, 0, srcDrag.z), new Vec(0, 0, 1));
+          if (!pt) return;
+          setSrcY(pt.y + srcDrag.off);
+        } else if (clockDrag) {
+          const pt = planePoint(new Vec(0, 0, clockDrag.z), new Vec(0, 0, 1));
+          if (!pt) return;
+          setGrav(gOfClockX(pt.x + clockDrag.off));
+        }
+        return;
+      }
+
+      if (pi.type === T.POINTERUP) {
+        if (elevDrag) {
+          const lifted = elevDrag.lifted;
+          const y = sim ? sim.y : 0;
+          elevDrag = null;
+          camera.attachControl(canvas, true);
+          if (lifted) dropFrom(y);        // 끌어 올렸다 놓으면 줄이 끊어진다
+          else { reset(); apply(); }      // 제자리면 처음 상태로 되돌린다
+        } else if (srcDrag) {
+          srcDrag = null;
+          camera.attachControl(canvas, true);
+        } else if (clockDrag) {
+          clockDrag = null;
+          camera.attachControl(canvas, true);
+        }
+      }
+    });
+  }
+
   function resetCamera() {
     if (!camera) return;
     camera.alpha = -Math.PI / 2;
@@ -552,6 +844,15 @@ const GenrelScene = (() => {
           { v: 'spaceAcc', t: '우주 g 가속' },
         ], state.scenario, 2)}
         <div class="control">
+          <div class="clabel">직접<br>조작</div>
+          <div class="cbody"><p class="hands-on">
+            <b>승강기를 잡아 위로 끌어 올렸다 놓으면</b> 줄이 끊어져 그 높이에서 자유 낙하합니다.
+            <b>케이블</b>을 누르면 바로 줄이 끊어지고, 통로 옆의 <b>＋ · －</b> 로는
+            표의 승강기 상태를 차례대로 넘깁니다.
+            <b>사람이나 생각 풍선</b>을 누르면 눈금이 똑같은 반대편 상황(지구 ↔ 우주)으로 건너뜁니다.
+          </p></div>
+        </div>
+        <div class="control">
           <div class="clabel">실험</div>
           <button class="power" id="runBtn">▶ 출발</button>
         </div>
@@ -569,6 +870,14 @@ const GenrelScene = (() => {
           { v: 'gravity', t: '(다) 중력 속 정지' },
         ], state.lightCase, 1)}
         <div class="control">
+          <div class="clabel">직접<br>조작</div>
+          <div class="cbody"><p class="hands-on">
+            우주선 왼쪽 벽의 <b>광원을 위아래로 끌어</b> 빛이 출발하는 높이를 바꿉니다.
+            아래쪽 <b>엔진 노즐</b>을 누르면 엔진이 켜지고 꺼지며((나) 가속 ↔ (가) 정지),
+            더 아래의 <b>행성</b>을 누르면 (다) 중력 속에 정지한 상태가 됩니다.
+          </p></div>
+        </div>
+        <div class="control">
           <div class="clabel">빛 쏘기</div>
           <button class="power" id="runBtn">▶ 발사</button>
         </div>
@@ -582,6 +891,13 @@ const GenrelScene = (() => {
       ${LabUI.slider('gFactor', '천체의 중력<br>(연출 배율)',
         { min: 0, max: 10, step: 1, value: state.gFactor, fmt: (v) => `×${v}` })}
       <div class="control">
+        <div class="clabel">직접<br>조작</div>
+        <div class="cbody"><p class="hands-on">
+          <b>왼쪽 시계를 끌어</b> 천체에 가까이 놓을수록 중력이 세져 시계가 느리게 갑니다.
+          천체 위의 <b>＋ · －</b> 로도 중력 배율을 한 칸씩 바꿉니다.
+        </p></div>
+      </div>
+      <div class="control">
         <div class="clabel">시계</div>
         <button class="power" id="runBtn">▶ 시작</button>
       </div>
@@ -592,6 +908,7 @@ const GenrelScene = (() => {
   }
 
   function bindControls(root, onChange) {
+    onChangeCb = onChange;      // 3D 에서 조작해도 측정값이 갱신되도록
     root.querySelectorAll('[data-mode]').forEach((b) => b.addEventListener('click', () => {
       state.mode = b.dataset.mode;
       reset();
@@ -666,7 +983,7 @@ const GenrelScene = (() => {
     }
     const ratio = 1 / (1 + state.gFactor * 0.25);
     return `
-      <div class="row"><span>천체 표면 시계</span><b>${sim.tA.toFixed(1)} s</b></div>
+      <div class="row"><span>천체 가까이 시계</span><b>${sim.tA.toFixed(1)} s</b></div>
       <div class="row"><span>먼 우주 시계</span><b>${sim.tB.toFixed(1)} s</b></div>
       <div class="row"><span>시계 빠르기 비</span><b class="big">${ratio.toFixed(2)} : 1</b></div>
       <div class="sec">실제 GPS 위성 (하루 기준)</div>
@@ -733,7 +1050,7 @@ const GenrelScene = (() => {
         for (let i = 0; i <= 40; i++) {
           const x = -3.6 + (i / 40) * 7.4;
           const t = (x + 3.6) / C_VIS;
-          const y = 2.6 - 0.5 * A_VIS * t * t;
+          const y = srcY - 0.5 * A_VIS * t * t;   // 끌어 놓은 광원 높이에서 출발한다
           if (i === 0) ctx.moveTo(xOf(x), yOf(y)); else ctx.lineTo(xOf(x), yOf(y));
         }
         ctx.stroke();
@@ -741,7 +1058,7 @@ const GenrelScene = (() => {
       };
       // 직선 (가)
       ctx.strokeStyle = 'rgba(255,255,255,.3)'; ctx.lineWidth = 1.6;
-      ctx.beginPath(); ctx.moveTo(xOf(-3.6), yOf(2.6)); ctx.lineTo(xOf(3.8), yOf(2.6)); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(xOf(-3.6), yOf(srcY)); ctx.lineTo(xOf(3.8), yOf(srcY)); ctx.stroke();
       path('#ff8a3c');            // (나) 가속
       path('#b78af0', [7, 5]);    // (다) 중력 — 같은 곡선!
       ctx.fillStyle = '#9fb0c2'; ctx.font = '10px sans-serif';

@@ -833,18 +833,16 @@ const LabUI = {
         if (!list.length) return;
         let top = topAt(g.position.x, g.position.z, list);
         if (top === null) {
-          // 가장 넓은 면 안쪽(가장자리에서 한 뼘)으로 끌어당긴다
-          let best = list[0], bestA = 0;
+          // 바로 아래에 아무것도 없으면 «가장 넓은 면과 같은 높이»에만 맞춘다.
+          // (자리를 옮기면 기구를 가릴 수 있으므로 x·z 는 건드리지 않는다)
+          let bestTop = null, bestA = 0;
           list.forEach((m) => {
             const bb = m.getBoundingInfo().boundingBox;
             const a = (bb.maximumWorld.x - bb.minimumWorld.x) * (bb.maximumWorld.z - bb.minimumWorld.z);
-            if (a > bestA) { bestA = a; best = m; }
+            if (a > bestA) { bestA = a; bestTop = bb.maximumWorld.y; }
           });
-          const bb = best.getBoundingInfo().boundingBox;
-          const M = 1.2;
-          g.position.x = Math.min(bb.maximumWorld.x - M, Math.max(bb.minimumWorld.x + M, g.position.x));
-          g.position.z = Math.min(bb.maximumWorld.z - M, Math.max(bb.minimumWorld.z + M, g.position.z));
-          top = bb.maximumWorld.y;
+          top = bestTop;
+          if (top === null) return;
         }
         g.position.y = top - 0.05;
       };

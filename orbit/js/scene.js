@@ -84,11 +84,16 @@ const OrbitScene = (() => {
     hemi.intensity = 0.55;
     hemi.groundColor = new (B().Color3)(0.2, 0.22, 0.3);
 
+    canvasEl = canvas;          // 끌기가 끝나면 카메라를 다시 이 캔버스에 붙인다
+
     buildStars();
     buildKepler();
     buildCannon();
     buildProps();
     buildPlaceholders();
+    buildArrow();
+    buildStepper();
+    setupPointer();
 
     // 교과서 그림 액자 (배경 소품)
     LabUI.addPoster(scene, '../assets/thumbs/orbit.jpg', { x: -15, y: 2, z: 10, ry: 0.4 });
@@ -290,10 +295,195 @@ const OrbitScene = (() => {
     layout();
   }
 
+  /* ══ 화면에서 직접 조작 ═══════════════════════
+     · 케플러 — 행성을 잡아 태양에서 멀리·가까이 끌면 «시작 거리» 가 바뀌고,
+       행성에 달린 노란 속도 화살표를 잡아 늘이면 «처음 속력» 이 바뀐다.
+     · 대포  — 포신 앞의 노란 화살표를 잡아 늘이면 «발사 속력» 이 바뀐다.
+     · 화살표 위의 ＋ / － 로 속력을 잘게 다듬는다.                        */
+  let onChangeCb = null;
+  let canvasEl = null;
+  let arrowG = null, arrowShaft = null, arrowHead = null, stepV = null;
+  let drag = null;               // { kind:'planet'|'arrow', plane, off }
+
+  const V_SCALE = 0.55;          // 케플러: 1 AU/yr → 0.55 unit
+  const C_BASE = 0.7;            // 대포: 화살표의 밑길이
+  const C_SCALE = 0.11;          // 대포: 1 km/s → 0.11 unit
+  const C_MUZZLE = { x: 1.5, y: 6.3 };   // 포신(orBarrel) 앞끝
+  const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+
+  /** 지금 속력에 해당하는 화살표 길이 */
+  function arrowLen() {
+    return state.mode === 'kepler'
+      ? state.v0 * V_SCALE
+      : C_BASE + state.vLaunch * C_SCALE;
+  }
+
+  /** 처음 속도를 나타내는 노란 화살표 (자루 + 촉) — 국소 +x 방향으로 뻗는다 */
+  function buildArrow() {
+    arrowG = new (B().TransformNode)('orVArrowG', scene);
+    const m = emat('orVArrowM', '#ffd84a');
+    arrowShaft = B().MeshBuilder.CreateCylinder('orVShaft', { height: 1, diameter: 0.16 }, scene);
+    arrowShaft.rotation.z = -Math.PI / 2;    // 원기둥 축(+y)을 +x 로 눕힌다
+    arrowShaft.material = m;
+    arrowShaft.parent = arrowG;
+    arrowHead = B().MeshBuilder.CreateCylinder('orVHead',
+      { height: 0.45, diameterTop: 0, diameterBottom: 0.38 }, scene);
+    arrowHead.rotation.z = -Math.PI / 2;
+    arrowHead.material = m;
+    arrowHead.parent = arrowG;
+  }
+
+  function buildStepper() { stepV = LabUI.makeStepper(scene, 'Vel'); }
+
+  /** 화살표와 ＋ / － 의 자리 — layout() 에서 매번 다시 잡는다 */
+  function layoutHandles() {
+    const on = allPlaced();
+    if (arrowG) {
+      arrowShaft.setEnabled(on);
+      arrowHead.setEnabled(on);
+      if (on) {
+        const L = arrowLen();
+        // 케플러에서는 행성(반지름 0.35) 밖에서 자루를 시작해 «행성 끌기»와
+        // «화살표 끌기»가 겹치지 않게 한다. 대포는 포신 앞끝에서 바로 이어 붙인다.
+        const b0 = state.mode === 'kepler' ? 0.42 : 0;
+        const body = Math.max(0.12, L - 0.45 - b0);
+        arrowShaft.scaling.y = body;
+        arrowShaft.position.x = b0 + body / 2;
+        arrowHead.position.x = L - 0.225;
+        if (state.mode === 'kepler') {
+          // 궤도면 위, 행성의 출발점에서 접선(+z) 방향
+          arrowG.position.set(state.r0 * AU, 0, 0);
+          arrowG.rotation.y = -Math.PI / 2;
+        } else {
+          // 포신 앞끝에서 수평(+x) 방향
+          arrowG.position.set(C_MUZZLE.x, C_MUZZLE.y, 0);
+          arrowG.rotation.y = 0;
+        }
+      }
+    }
+    if (stepV) {
+      stepV.setEnabled(on);
+      if (on) {
+        const L = arrowLen();
+        // 화살표보다 «위쪽» 에 띄워 자취·행성과 겹치지 않게 한다
+        if (state.mode === 'kepler') stepV.place(state.r0 * AU, 1.7, L * 0.5, 0.85);
+        else stepV.place(C_MUZZLE.x + L * 0.5, C_MUZZLE.y + 1.8, 0, 0.9);
+      }
+    }
+  }
+
+  /** 3D 로 조작하면 진행을 멈추고 아래 단추 표시도 맞춘다 */
+  function stopRun() {
+    state.running = false;
+    const btn = document.querySelector('#goBtn');
+    if (btn) {
+      btn.textContent = state.mode === 'kepler' ? '▶ 던지기' : '▶ 실행';
+      btn.classList.remove('run');
+    }
+  }
+
+  /** 아래 슬라이더 눈금도 3D 조작을 따라오게 한다 (미세 조정용으로 남겨 둔다) */
+  function syncSliders() {
+    const set = (id, v, txt) => {
+      const el = document.querySelector('#' + id);
+      const out = document.querySelector('#' + id + 'Out');
+      if (el) el.value = v;
+      if (out) out.textContent = txt;
+    };
+    if (state.mode === 'kepler') {
+      set('r0', state.r0, `${state.r0.toFixed(1)} AU`);
+      set('v0', state.v0, `${state.v0.toFixed(1)} AU/yr`);
+    } else {
+      set('vLaunch', state.vLaunch, `${state.vLaunch.toFixed(1)} km/s`);
+    }
+  }
+
+  /** 조작 뒤 되돌아보기 — 셸의 refresh 가 update() 를 다시 부른다 */
+  function afterHands() {
+    reset();
+    syncSliders();
+    if (onChangeCb) onChangeCb(); else update();
+  }
+
+  function bumpV(d) {
+    if (state.mode === 'kepler') state.v0 = clamp(+(state.v0 + d * 0.1).toFixed(1), 3, 8.8);
+    else state.vLaunch = clamp(+(state.vLaunch + d * 0.5).toFixed(1), 2, 70);
+    stopRun();
+    afterHands();
+  }
+
+  /** 끌기 평면 — 케플러는 궤도면(수평), 대포는 발사면(연직). 잡은 점을 지나게 한다 */
+  function makePlane(p) {
+    return state.mode === 'kepler'
+      ? B().Plane.FromPositionAndNormal(new (B().Vector3)(0, p.y, 0), new (B().Vector3)(0, 1, 0))
+      : B().Plane.FromPositionAndNormal(new (B().Vector3)(0, 0, p.z), new (B().Vector3)(0, 0, 1));
+  }
+  /** 화면의 한 점을 끌기 평면 위의 세계 좌표로 바꾼다 */
+  function dragPoint() {
+    if (!drag) return null;
+    const ray = scene.createPickingRay(scene.pointerX, scene.pointerY, null, camera);
+    const d = ray.intersectsPlane(drag.plane);
+    if (d === null) return null;
+    return ray.origin.add(ray.direction.scale(d));
+  }
+  /** 끌기 축 위의 눈금 — 행성은 태양까지 거리, 화살표는 밑동에서 잰 길이 */
+  function axisOf(pt) {
+    if (state.mode !== 'kepler') return pt.x - C_MUZZLE.x;
+    return drag && drag.kind === 'planet' ? Math.hypot(pt.x, pt.z) : pt.z;
+  }
+
+  function beginDrag(kind, p) {
+    // 공전 중에 잡으면 처음 상태로 돌리고 측정값·그래프까지 함께 되돌린다
+    // (여기서 reset() 만 하면 눌렀다 뗀 뒤 오른쪽 값이 옛 값 그대로 남는다)
+    if (state.running) { stopRun(); afterHands(); }
+    drag = { kind, plane: makePlane(p), off: 0 };
+    const pt = dragPoint() || p;                        // 누른 순간의 어긋남을 갈무리해
+    const base = kind === 'planet' ? state.r0 * AU : arrowLen();
+    drag.off = base - axisOf(pt);                       // 잡자마자 튀지 않게 한다
+    camera.detachControl();
+  }
+
+  function setupPointer() {
+    scene.onPointerObservable.add((pi) => {
+      const T = B().PointerEventTypes;
+      if (pi.type === T.POINTERDOWN) {
+        if (!allPlaced()) return;
+        const m = pi.pickInfo && pi.pickInfo.pickedMesh;
+        if (!m) return;
+        if (m.name === 'btnAddVel') { bumpV(+1); return; }
+        if (m.name === 'btnSubVel') { bumpV(-1); return; }
+        const p = pi.pickInfo.pickedPoint;
+        if (!p) return;
+        if (m.name === 'orVShaft' || m.name === 'orVHead') beginDrag('arrow', p);
+        else if (m.name === 'orPlanet' && state.mode === 'kepler') beginDrag('planet', p);
+      } else if (pi.type === T.POINTERMOVE && drag) {
+        const pt = dragPoint();
+        if (!pt) return;
+        const s = axisOf(pt) + drag.off;
+        let changed = false;
+        if (drag.kind === 'planet') {
+          const v = clamp(+(s / AU).toFixed(1), 0.5, 2.0);
+          if (v !== state.r0) { state.r0 = v; changed = true; }
+        } else if (state.mode === 'kepler') {
+          const v = clamp(+(s / V_SCALE).toFixed(1), 3, 8.8);
+          if (v !== state.v0) { state.v0 = v; changed = true; }
+        } else {
+          const v = clamp(+((s - C_BASE) / C_SCALE).toFixed(1), 2, 70);
+          if (v !== state.vLaunch) { state.vLaunch = v; changed = true; }
+        }
+        if (changed) afterHands();
+      } else if (pi.type === T.POINTERUP && drag) {
+        drag = null;
+        camera.attachControl(canvasEl, true);
+      }
+    });
+  }
+
   function layout() {
     if (!sim) return;
     const kep = state.mode === 'kepler';
     const all = allPlaced();
+    layoutHandles();
 
     // 준비 단계 — 놓은 도구부터 하나씩 나타난다 (별 배경은 항상 보임)
     if (!all) {
@@ -434,7 +624,7 @@ const OrbitScene = (() => {
   }
 
   /* ══ 컨트롤 ═════════════════════════════════ */
-  const guide = '행성을 던져 타원 궤도를 만들어 보세요. 태양에 가까울수록 빨라지고(제2법칙), 긴반지름이 클수록 주기가 길어집니다(제3법칙).';
+  const guide = '화면에서 <b>행성을 잡아 끌어</b> 시작 거리를, <b>노란 속도 화살표를 늘여</b> 처음 속력을 정한 뒤 던져 보세요. 태양에 가까울수록 빨라지고(제2법칙), 긴반지름이 클수록 주기가 길어집니다(제3법칙).';
   const prepGuide = '점선 자리에 태양·행성·뉴턴의 대포·기록 장치를 끌어다 놓아 우주 실험을 준비하세요.';
 
   function controlsHTML() {
@@ -449,6 +639,14 @@ const OrbitScene = (() => {
           { min: 0.5, max: 2.0, step: 0.1, value: state.r0, fmt: (v) => `${(+v).toFixed(1)} AU` })}
         ${LabUI.slider('v0', '시작 속력<br><i>v</i><sub>0</sub>',
           { min: 3, max: 8.8, step: 0.1, value: state.v0, fmt: (v) => `${(+v).toFixed(1)} AU/yr` })}
+        <div class="control">
+          <div class="clabel">직접<br>조작</div>
+          <div class="cbody"><p class="hands-on">
+            <b>행성을 잡아</b> 태양에서 멀리·가까이 끌면 시작 거리가,
+            행성에 달린 <b>노란 속도 화살표를 잡아 늘이면</b> 처음 속력이 바뀝니다.
+            화살표 위 <b>＋ · －</b> 로 0.1 AU/yr 씩 다듬습니다.
+          </p></div>
+        </div>
         <div class="control">
           <div class="clabel">실험</div>
           <button class="power" id="goBtn">▶ 던지기</button>
@@ -467,6 +665,13 @@ const OrbitScene = (() => {
       ${LabUI.slider('vLaunch', '발사 속력<br><i>v</i>',
         { min: 2, max: 70, step: 0.1, value: state.vLaunch, fmt: (v) => `${(+v).toFixed(1)} km/s` })}
       <div class="control">
+        <div class="clabel">직접<br>조작</div>
+        <div class="cbody"><p class="hands-on">
+          포신 앞의 <b>노란 화살표를 잡아 늘이면</b> 발사 속력이 바뀝니다.
+          화살표 위 <b>＋ · －</b> 로 0.5 km/s 씩 다듬어 원 궤도 속력·탈출 속도에 맞춰 보세요.
+        </p></div>
+      </div>
+      <div class="control">
         <div class="clabel">발사</div>
         <button class="power" id="goBtn">▶ 실행</button>
       </div>
@@ -477,6 +682,7 @@ const OrbitScene = (() => {
   }
 
   function bindControls(root, onChange) {
+    onChangeCb = onChange;      // 3D 에서 조작해도 측정값이 갱신되도록
     root.querySelectorAll('[data-mode]').forEach((b) => b.addEventListener('click', () => {
       state.mode = b.dataset.mode;
       reset();

@@ -14,7 +14,7 @@ const EnergyScene = (() => {
   const G = 9.8;
   const GROUND_Y = 0;
 
-  let scene, camera;
+  let scene, camera, canvasEl;
   let apple, tree, tower, ruler, ghostMarks = [];
   let pendGroup, pendString, pendArm, pendPivot;
   let placed = {};
@@ -32,6 +32,7 @@ const EnergyScene = (() => {
   // 진행 상태
   let sim = null;           // 자유 낙하
   let pend = null;          // 진자 { th, om }
+  let pendSide = 1;         // 진자를 어느 쪽으로 당겨 두었는지 (＋1 오른쪽 · －1 왼쪽)
   const DRAG_K = 0.14;      // 공기 저항 계수 (b/m, 1/s 단위로 단순화)
   const PEND_K = 0.22;      // 진자 감쇠 계수 (1/s)
 
@@ -54,6 +55,7 @@ const EnergyScene = (() => {
   /* ══ 장면 ═══════════════════════════════════ */
   function create(engine, canvas) {
     scene = new (B().Scene)(engine);
+    canvasEl = canvas;                 // 끌기가 끝나면 카메라를 다시 이 캔버스에 붙인다
     scene.clearColor = B().Color4.FromHexString('#bcdcf7ff');
 
     camera = new (B().ArcRotateCamera)(
@@ -78,6 +80,8 @@ const EnergyScene = (() => {
     buildApple();
     buildPendulum();
     buildPlaceholders();
+    buildSteppers();
+    setupPointer();
 
     // 교과서 그림 액자 (배경 소품)
     LabUI.addPoster(scene, '../assets/thumbs/energy.jpg', { x: -8, y: 0, z: 8, ry: 0.35 });
@@ -261,6 +265,198 @@ const EnergyScene = (() => {
   }
   function slotName(id) { return slots[id].name; }
 
+  /* ══ 화면에서 직접 조작 ═══════════════════════
+     · 자유 낙하 — 사과를 위아래로 끌어 처음 높이를 정하고, 손을 놓으면 곧바로 떨어진다
+     · 진자     — 사과(봅)나 실을 옆으로 끌어 시작 각도를 정하고, 놓으면 흔들리기 시작한다
+     · 사과 옆 ＋ / － 로 질량을, 진자 모드에서는 매단 팔 오른쪽 ＋ / － 로 길이까지 바꾼다   */
+  let stepMass = null, stepLen = null;
+  let drag = null;              // { kind: 'fall' | 'pend', off }
+  let onChangeCb = null;        // 조작하면 측정값·그래프를 다시 그리도록
+
+  function buildSteppers() {
+    stepMass = LabUI.makeStepper(scene, 'Mass');
+    stepLen = LabUI.makeStepper(scene, 'Len');
+  }
+
+  /**
+   * ＋ / － 단추 자리.
+   * 사과 «바로 위»에 두면 높이가 클 때 화면 밖으로 밀려나므로 «옆»으로 비켜 둔다.
+   *   자유 낙하 — 사과 오른쪽 (x 1.4 ~ 3.0). 사과(반지름 0.46)와도, 눈금자(x ≤ −0.3)와도 겹치지 않는다
+   *   진자     — 매단 팔 오른쪽 위에 위아래로 나란히. 아래가 질량, 위가 진자 길이
+   */
+  function layoutSteppers() {
+    if (!stepMass || !stepLen) return;
+    const on = allPlaced();
+    if (state.mode === 'pend') {
+      stepMass.place(2.3, pivotY() + 1.0, -1.0, 0.8);
+      stepLen.place(2.3, pivotY() + 2.4, -1.0, 0.8);   // 질량 단추와 1.4 만큼 떨어진다
+    } else {
+      stepMass.place(2.2, GROUND_Y + state.h0 * M + 0.46, -1.2, 0.8);
+    }
+    stepMass.setEnabled(on);
+    stepLen.setEnabled(on && state.mode === 'pend');
+  }
+
+  /** 3D 에서 값을 바꾸면 아래 조작 막대의 표시도 함께 맞춘다 */
+  function syncSlider(id, v, text) {
+    const el = document.querySelector('#' + id);
+    const out = document.querySelector('#' + id + 'Out');
+    if (el) el.value = v;
+    if (out) out.textContent = text;
+  }
+
+  function hint(text, ok) {
+    if (typeof Lab !== 'undefined' && Lab.showHint) Lab.showHint(text, !!ok);
+  }
+
+  /** 아래 «실험» 단추의 글씨를 지금 상태에 맞춘다 */
+  function setRunBtn(on) {
+    const btn = document.querySelector('#runBtn');
+    if (!btn) return;
+    btn.textContent = on ? RUNNING_LABEL() : RUN_LABEL();
+    btn.classList.toggle('run', on);
+  }
+
+  /** 셸의 refresh 가 update() 를 다시 부르므로 여기서 update() 를 또 부르지 않는다 */
+  function refreshAll() {
+    if (onChangeCb) onChangeCb();
+    else update();
+  }
+
+  /** 화면의 한 점을 사과가 움직이는 평면(z = 0) 위의 세계 좌표로 바꾼다 */
+  function pointerOnPlane() {
+    const ray = scene.createPickingRay(scene.pointerX, scene.pointerY, null, camera);
+    const plane = B().Plane.FromPositionAndNormal(
+      new (B().Vector3)(0, 0, 0), new (B().Vector3)(0, 0, 1));
+    const d = ray.intersectsPlane(plane);
+    if (d === null) return null;
+    return ray.origin.add(ray.direction.scale(d));
+  }
+
+  /** 사과의 질량을 0.1 kg 씩 바꾼다 (아래 슬라이더와 같은 범위) */
+  function bumpMass(d) {
+    const v = Math.max(0.1, Math.min(2.0, +(state.mass + d * 0.1).toFixed(1)));
+    if (v === state.mass) return;
+    state.mass = v;
+    syncSlider('mass', v, `${v.toFixed(1)} kg`);
+    reset();                       // 아래 슬라이더와 똑같이 처음 상태로 되돌린다
+    setRunBtn(false);
+    refreshAll();
+    hint(`사과의 질량을 ${v.toFixed(1)} kg 으로 바꿨습니다 — 떨어지는 속력은 그대로일까요?`, true);
+  }
+
+  /** 진자의 길이를 0.5 m 씩 바꾼다 (아래 슬라이더와 같은 범위) */
+  function bumpLen(d) {
+    const v = Math.max(1.5, Math.min(5.0, +(state.pendL + d * 0.5).toFixed(1)));
+    if (v === state.pendL) return;
+    state.pendL = v;
+    syncSlider('pendL', v, `${v.toFixed(1)} m`);
+    reset();
+    setRunBtn(false);
+    refreshAll();
+    hint(`진자의 길이를 ${v.toFixed(1)} m 로 바꿨습니다 — 주기가 달라집니다.`, true);
+  }
+
+  /** 떨어지던(또는 바닥에 닿은) 사과를 그 자리에서 잡아 다시 매단다 */
+  function catchApple() {
+    if (sim && (sim.landed || Math.abs(sim.y - state.h0) > 1e-9)) {
+      const h = Math.max(1, Math.min(10, Math.round(sim.y * 2) / 2));
+      state.h0 = h;
+      syncSlider('h0', h, `${h.toFixed(1)} m`);
+    }
+    lastFrame = 'f' + state.h0;    // 손으로 잡은 시점이므로 카메라는 그대로 둔다
+    sim = { t: 0, y: state.h0, v: 0, landed: false, lost: 0, peakV: 0 };
+    clearMarks();
+    layout();
+  }
+
+  const APPLE_RE = /^(appleBody|appleStem|appleLeaf|pendString)/;
+
+  function setupPointer() {
+    scene.onPointerObservable.add((pi) => {
+      const T = B().PointerEventTypes;
+      const mesh = pi.pickInfo && pi.pickInfo.pickedMesh;
+      const nm = mesh ? mesh.name : '';
+
+      if (pi.type === T.POINTERDOWN) {
+        if (!allPlaced()) return;              // 배치가 끝나기 전에는 조작하지 않는다
+        if (nm === 'btnAddMass') { bumpMass(+1); return; }
+        if (nm === 'btnSubMass') { bumpMass(-1); return; }
+        if (state.mode === 'pend' && nm === 'btnAddLen') { bumpLen(+1); return; }
+        if (state.mode === 'pend' && nm === 'btnSubLen') { bumpLen(-1); return; }
+        if (!APPLE_RE.test(nm)) return;
+
+        const p0 = pointerOnPlane();
+        if (p0 === null) return;
+        state.running = false;
+        setRunBtn(false);
+
+        if (state.mode === 'pend') {
+          if (!pend) return;
+          pend.om = 0;                          // 흔들리던 사과를 손으로 붙잡는다
+          clearMarks();
+          drag = { kind: 'pend', off: Math.atan2(p0.x, pivotY() - p0.y) - pend.th };
+          layoutPend();
+        } else {
+          catchApple();
+          // 잡은 순간의 어긋남을 저장해 두어 «잡자마자 튀지» 않게 한다
+          drag = { kind: 'fall', off: p0.y - apple.position.y };
+        }
+        camera.detachControl();
+        refreshAll();
+
+      } else if (pi.type === T.POINTERMOVE && drag) {
+        const p = pointerOnPlane();
+        if (p === null) return;
+
+        if (drag.kind === 'fall') {
+          let h = (p.y - drag.off - GROUND_Y - 0.46) / M;
+          h = Math.max(1, Math.min(10, Math.round(h * 2) / 2));
+          if (h === state.h0) return;
+          state.h0 = h;
+          lastFrame = 'f' + h;
+          sim.y = h; sim.v = 0; sim.lost = 0; sim.peakV = 0; sim.landed = false;
+          syncSlider('h0', h, `${h.toFixed(1)} m`);
+        } else {
+          // 매단 점에서 내려다본 각도 — 아래쪽 수직선이 0°
+          const raw = Math.atan2(p.x, pivotY() - p.y) - drag.off;
+          const side = raw < 0 ? -1 : 1;
+          const deg = Math.max(10, Math.min(75,
+            Math.round(Math.abs(raw) * 180 / Math.PI / 5) * 5));
+          if (deg === state.theta0 && side === pendSide) return;
+          state.theta0 = deg;
+          pendSide = side;
+          pend.th = side * deg * Math.PI / 180;
+          pend.om = 0;
+          syncSlider('theta0', deg, `${deg} °`);
+        }
+        refreshAll();
+
+      } else if (pi.type === T.POINTERUP && drag) {
+        const kind = drag.kind;
+        drag = null;
+        camera.attachControl(canvasEl, true);
+        clearMarks();
+        // 잡기만 하고 움직이지 않았어도 «지금 잡고 있는 각도»를 시작 각도로 삼는다
+        if (kind === 'pend' && pend) {
+          const deg = Math.max(10, Math.min(75,
+            Math.round(Math.abs(pend.th) * 180 / Math.PI / 5) * 5));
+          pendSide = pend.th < 0 ? -1 : 1;
+          state.theta0 = deg;
+          pend.th = pendSide * deg * Math.PI / 180;
+          syncSlider('theta0', deg, `${deg} °`);
+        }
+        state.running = true;                   // 손을 놓으면 곧바로 시작한다
+        setRunBtn(true);
+        hint(kind === 'pend'
+          ? `${state.theta0}° 에서 손을 놓았습니다 — 최고점의 위치 에너지가 최저점의 운동 에너지로 바뀝니다.`
+          : `${state.h0.toFixed(1)} m 에서 손을 놓았습니다 — 떨어지는 동안 두 에너지의 합을 지켜보세요.`,
+          true);
+        refreshAll();
+      }
+    });
+  }
+
   /* ══ 물리 ═══════════════════════════════════ */
   let lastFrame = null;      // 마지막으로 잡은 프레이밍 키
 
@@ -291,6 +487,7 @@ const EnergyScene = (() => {
   function reset() {
     state.running = false;
     sim = { t: 0, y: state.h0, v: 0, landed: false, lost: 0, peakV: 0 };
+    pendSide = 1;
     pend = { th: state.theta0 * Math.PI / 180, om: 0 };
     clearMarks();
 
@@ -317,6 +514,7 @@ const EnergyScene = (() => {
     apple.position.set(0, GROUND_Y + sim.y * M + 0.46, 0);
     apple.rotation.z = 0;
     if (holders.apple) holders.apple.position.y = GROUND_Y + state.h0 * M;
+    layoutSteppers();
   }
 
   /** 진자 배치 — 피벗·팔·실·봅(사과) */
@@ -337,6 +535,7 @@ const EnergyScene = (() => {
     apple.position.set(sx * Ls, py - cx * Ls, 0);
     apple.rotation.z = pend.th;
     if (holders.apple) holders.apple.position.y = py - Ls;
+    layoutSteppers();
   }
 
   let markTimer = 0;
@@ -420,7 +619,7 @@ const EnergyScene = (() => {
     if (!camera) return;
     camera.alpha = -Math.PI / 2 + 0.24;
     camera.beta = 1.24;
-    lastH0 = null;
+    lastFrame = null;          // 프레이밍을 처음부터 다시 잡게 한다
     reset();
   }
 
@@ -434,7 +633,7 @@ const EnergyScene = (() => {
   function totalAtStart() { return state.mass * G * maxH(); }
 
   /* ══ 컨트롤 ═════════════════════════════════ */
-  const guide = '높이와 질량을 정하고 실험을 시작해, 위치 에너지와 운동 에너지가 서로 바뀌는 동안 둘의 합이 어떻게 되는지 관찰해 보세요. «진자» 모드로 바꾸면 전환이 반복됩니다.';
+  const guide = '화면 속 사과를 끌어 올렸다 손을 놓아 보세요. 위치 에너지와 운동 에너지가 서로 바뀌는 동안 둘의 합이 어떻게 되는지 관찰합니다. «진자» 모드에서는 사과를 옆으로 끌었다 놓으면 전환이 반복됩니다.';
   const prepGuide = '점선으로 표시된 자리에 낙하 장치·사과·속도 측정기를 끌어다 놓아 실험을 준비하세요.';
 
   const RUN_LABEL = () => state.mode === 'pend' ? '▶ 놓기' : '▶ 떨어뜨리기';
@@ -469,16 +668,31 @@ const EnergyScene = (() => {
           { min: 1.5, max: 5.0, step: 0.5, value: state.pendL, fmt: (v) => `${v.toFixed(1)} m` })}
         ${LabUI.slider('theta0', '시작 각도<br><i>θ</i>₀',
           { min: 10, max: 75, step: 5, value: state.theta0, fmt: (v) => `${v} °` })}
+        <div class="control">
+          <div class="clabel">직접<br>조작</div>
+          <div class="cbody"><p class="hands-on">
+            사과(또는 실)를 <b>옆으로 끌어</b> 시작 각도를 정하고 <b>손을 놓으면</b> 곧바로 흔들립니다.
+            매단 팔 오른쪽의 <b>＋ · －</b> 로 아래는 질량을, 위는 진자 길이를 바꿉니다.
+          </p></div>
+        </div>
         ${shared}`;
     }
     return `
       ${modeCtl}
       ${LabUI.slider('h0', '처음 높이<br><i>h</i>',
         { min: 1, max: 10, step: 0.5, value: state.h0, fmt: (v) => `${v.toFixed(1)} m` })}
+      <div class="control">
+        <div class="clabel">직접<br>조작</div>
+        <div class="cbody"><p class="hands-on">
+          사과를 <b>위아래로 끌어</b> 눈금자를 보며 처음 높이를 정하고,
+          <b>손을 놓으면</b> 곧바로 떨어집니다. 사과 옆 <b>＋ · －</b> 로 질량을 바꿉니다.
+        </p></div>
+      </div>
       ${shared}`;
   }
 
   function bindControls(root, onChange) {
+    onChangeCb = onChange;          // 3D 에서 조작해도 측정값이 갱신되도록
     const after = () => { reset(); onChange(); };
 
     // 모드 전환 — 컨트롤 자체가 달라지므로 다시 그려서 다시 묶는다

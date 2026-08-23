@@ -20,6 +20,8 @@ const RelativityScene = (() => {
   let train, ground, clockLo, clockHi, photon, trailSys = null;
   let observerS, observerSp, markers = [];
   let placed = {};
+  let onChangeCb = null;      // 3D 에서 조작해도 측정값이 갱신되도록
+  let canvasEl = null;        // create(engine, canvas) 의 canvas
 
   const state = {
     beta: 0.35,       // v / c (처음에는 중간 속력)
@@ -60,6 +62,7 @@ const RelativityScene = (() => {
   function create(engine, canvas) {
     scene = new (B().Scene)(engine);
     scene.clearColor = B().Color4.FromHexString('#0e1420ff');
+    canvasEl = canvas;          // 끌기가 끝나면 여기에 카메라를 다시 붙인다
 
     camera = new (B().ArcRotateCamera)(
       'camRel', -Math.PI / 2, 1.32, 26, new (B().Vector3)(0, 3.0, 0), scene
@@ -81,6 +84,9 @@ const RelativityScene = (() => {
     buildTrain();
     buildObservers();
     buildPlaceholders();
+    buildStepper();
+    buildBetaTag();
+    setupPointer();
 
     // 상시 바닥 — 도구를 놓기 전에도 기본 배경이 보인다
     const __base = B().MeshBuilder.CreateGround('rlBase', { width: 44, height: 18 }, scene);
@@ -272,6 +278,9 @@ const RelativityScene = (() => {
 
   /* ══ 도구 배치 ═══════════════════════════════ */
   function resetTools() {
+    // 기차를 끄는 도중에 실험을 바꾸면 카메라가 떨어진 채로 남는다 — 여기서 되돌린다
+    if (dragTrain && camera && canvasEl) camera.attachControl(canvasEl, true);
+    dragTrain = null;
     placed = {};
     tools.forEach((t) => { placed[t.id] = false; });
     resetRun();
@@ -371,12 +380,198 @@ const RelativityScene = (() => {
       observerS.position.x = 0;
       ground.position.x = 0;
     }
+
+    layoutStepper();
   }
 
   function update() {
     if (!scene) return;
     layout();
     drawTrail();
+  }
+
+  /* ══ 화면에서 직접 조작 ═══════════════════════
+     · 기차를 오른쪽으로 밀면 빨라지고, 왼쪽으로 끌면 느려진다
+     · 사람(S · S′)을 누르면 그 사람이 보는 장면으로 바뀐다
+     · 빛 시계의 거울을 누르면 시계가 섰다가 다시 간다
+     · 기차 위 ＋ / － 로 속력을 잘게 맞춘다                          */
+  const BETA_MAX = 0.995;     // 하단 슬라이더와 같은 최댓값
+  const DRAG_K = 0.07;        // 1 unit 끌 때 바뀌는 v/c
+  const BETA_STEP = 0.025;    // ＋ / － 한 번에 바뀌는 v/c
+
+  let stepBeta = null;
+  let dragTrain = null;       // { x0, z0, beta0 } — 누른 순간의 값
+  let betaTag = null, betaTex = null, betaShown = '';
+  const TAG_W = 320, TAG_H = 80;
+
+  function buildStepper() { stepBeta = LabUI.makeStepper(scene, 'Beta'); }
+
+  /** ＋/－ 단추 위 이름표 — 무엇을 조절하는 단추인지 알려 준다 */
+  function buildBetaTag() {
+    betaTag = B().MeshBuilder.CreatePlane('relBetaTag', { width: 3.2, height: 0.8 }, scene);
+    betaTex = new (B().DynamicTexture)('relBetaTagT', { width: TAG_W, height: TAG_H }, scene, true);
+    betaTex.hasAlpha = true;
+    const m = new (B().StandardMaterial)('relBetaTagM', scene);
+    m.diffuseTexture = betaTex;
+    m.opacityTexture = betaTex;
+    // 글씨 색을 그림에서 그대로 가져온다 — 이것이 없으면 판 전체가 흰색으로 뭉개진다
+    m.emissiveTexture = betaTex;
+    m.emissiveColor = new (B().Color3)(1, 1, 1);
+    m.specularColor = new (B().Color3)(0, 0, 0);
+    m.backFaceCulling = false;
+    betaTag.material = m;
+    betaTag.billboardMode = B().Mesh.BILLBOARDMODE_Y;
+    betaTag.isPickable = false;
+    // 글로우 레이어에서 빼 준다 — 이름표가 하얗게 번지지 않게 (makeStepper 와 같은 방식)
+    (scene.effectLayers || []).forEach((L) => { if (L.addExcludedMesh) L.addExcludedMesh(betaTag); });
+    drawBetaTag();
+  }
+
+  function drawBetaTag() {
+    if (!betaTex) return;
+    const txt = `기차의 속력  ${state.beta.toFixed(3)} c`;
+    if (txt === betaShown) return;      // 값이 그대로면 다시 그리지 않는다
+    betaShown = txt;
+    const c = betaTex.getContext();
+    c.clearRect(0, 0, TAG_W, TAG_H);
+    c.fillStyle = 'rgba(14,20,32,.72)';
+    c.fillRect(0, 8, TAG_W, TAG_H - 16);
+    c.fillStyle = '#ffd84a';
+    let px = 34;
+    c.font = `bold ${px}px "Noto Sans KR", sans-serif`;
+    while (px > 14 && c.measureText(txt).width > TAG_W - 24) {
+      px -= 2;
+      c.font = `bold ${px}px "Noto Sans KR", sans-serif`;
+    }
+    c.textAlign = 'center';
+    c.textBaseline = 'middle';
+    c.fillText(txt, TAG_W / 2, TAG_H / 2);
+    betaTex.update();
+  }
+
+  /** 기차 지붕(y ≈ 5.8)보다 위, 눈금 기둥보다 앞쪽에 띄워 부품과 겹치지 않게 한다 */
+  function layoutStepper() {
+    if (!stepBeta) return;
+    const on = allPlaced();
+    stepBeta.place(0, GROUND_Y + 7.4, -2.4, 1.1);
+    stepBeta.setEnabled(on);
+    if (betaTag) {
+      betaTag.position.set(0, GROUND_Y + 8.3, -2.4);
+      betaTag.setEnabled(on);
+      drawBetaTag();          // 하단 슬라이더로 바꿔도 이름표가 따라온다
+    }
+  }
+
+  /** 3D 조작 뒤 화면과 측정값을 새로 고친다 (셸의 refresh 가 update 를 다시 부른다) */
+  function notify() {
+    if (onChangeCb) onChangeCb();
+    else update();
+  }
+
+  /** 3D 에서 바꾼 값을 아래쪽 조작 막대에도 그대로 비춘다 */
+  function syncPanel() {
+    const el = document.querySelector('#beta');
+    const out = document.querySelector('#betaOut');
+    if (el) el.value = state.beta;
+    if (out) out.textContent = `${state.beta.toFixed(3)} c`;
+    const mark = (key, val) => {
+      document.querySelectorAll('[data-' + key + ']').forEach((b) => {
+        b.classList.toggle('on', b.getAttribute('data-' + key) === String(val));
+      });
+    };
+    mark('view', state.view);
+    mark('preset', state.beta);
+  }
+
+  /** 값의 범위는 슬라이더와 똑같이 지킨다 */
+  function setBeta(v) {
+    const b = +Math.max(0, Math.min(BETA_MAX, v)).toFixed(3);
+    if (b === state.beta) return;
+    state.beta = b;
+    trail.length = 0;         // 속력이 바뀌면 자취를 새로 그린다
+    drawBetaTag();
+    syncPanel();
+    notify();
+  }
+
+  function setView(v) {
+    if (state.view === v) return;
+    state.view = v;
+    trail.length = 0;
+    resetRun();
+    syncPanel();
+    notify();
+  }
+
+  /** 빛 시계를 세우거나 다시 켠다 — 하단 단추와 같은 모습이 되도록 맞춘다 */
+  function toggleRun() {
+    state.running = !state.running;
+    const btn = document.querySelector('#runBtn');
+    if (btn) {
+      btn.textContent = state.running ? '작동 중' : '▶ 시작';
+      btn.classList.toggle('run', state.running);
+      btn.classList.toggle('off', !state.running);
+    }
+    notify();
+  }
+
+  /** 이름이 맞는 메시만 골라 집는다 — 반투명한 기차 몸체에 가려지지 않게 한다 */
+  function pickBy(re) {
+    const p = scene.pick(scene.pointerX, scene.pointerY,
+      (m) => m.isEnabled() && m.isVisible && m.isPickable && re.test(m.name));
+    return (p && p.hit) ? p : null;
+  }
+
+  /** 화면 위 한 점을 «잡은 지점의 z» 를 지나는 세로 평면에서 세계 좌표 x 로 바꾼다 */
+  function pointerX(atZ) {
+    const ray = scene.createPickingRay(scene.pointerX, scene.pointerY, null, camera);
+    const plane = B().Plane.FromPositionAndNormal(
+      new (B().Vector3)(0, 0, atZ), new (B().Vector3)(0, 0, 1));
+    const d = ray.intersectsPlane(plane);
+    if (d === null) return null;
+    return ray.origin.add(ray.direction.scale(d)).x;
+  }
+
+  function setupPointer() {
+    scene.onPointerObservable.add((pi) => {
+      const T = B().PointerEventTypes;
+
+      if (pi.type === T.POINTERDOWN) {
+        if (!allPlaced()) return;
+
+        // ＋ / － — 속력을 잘게 맞춘다
+        const btn = pickBy(/^btn(Add|Sub)Beta$/);
+        if (btn) {
+          setBeta(state.beta + (btn.pickedMesh.name === 'btnAddBeta' ? BETA_STEP : -BETA_STEP));
+          return;
+        }
+
+        // 사람을 누르면 그 사람이 보는 장면으로 바뀐다
+        const obs = pickBy(/^obsSp?[BHL]$/);
+        if (obs) { setView(/^obsSp/.test(obs.pickedMesh.name) ? 'Sp' : 'S'); return; }
+
+        // 빛 시계(거울·기둥)를 누르면 시계가 섰다가 다시 간다
+        if (pickBy(/^(relMirror(Lo|Hi)|relPost\d)$/)) { toggleRun(); return; }
+
+        // 기차를 잡는다 — 미는 쪽으로 빨라진다
+        const car = pickBy(/^(relBody|relWin)/);
+        if (car) {
+          const z0 = car.pickedPoint.z;
+          const x = pointerX(z0);
+          if (x === null) return;
+          dragTrain = { x0: x, z0, beta0: state.beta };
+          camera.detachControl();
+        }
+      } else if (pi.type === T.POINTERMOVE && dragTrain) {
+        const x = pointerX(dragTrain.z0);
+        if (x === null) return;
+        // 누른 순간의 어긋남을 빼 주어 «잡자마자 튀지» 않게 한다
+        setBeta(dragTrain.beta0 + (x - dragTrain.x0) * DRAG_K);
+      } else if (pi.type === T.POINTERUP && dragTrain) {
+        dragTrain = null;
+        camera.attachControl(canvasEl, true);
+      }
+    });
   }
 
   function resetCamera() {
@@ -410,10 +605,20 @@ const RelativityScene = (() => {
       <div class="control">
         <div class="clabel">시계<br>맞추기</div>
         <button class="power off" id="resetBtn">↻ 0 으로</button>
+      </div>
+      <div class="control">
+        <div class="clabel">직접<br>조작</div>
+        <div class="cbody"><p class="hands-on">
+          <b>기차를 오른쪽으로 밀면</b> 빨라지고 <b>왼쪽으로 끌면</b> 느려집니다.
+          기차 위 <b>＋ · －</b> 로 속력을 잘게 맞춥니다.
+          <b>사람(S · S′)을 누르면</b> 그 사람이 보는 장면으로 바뀌고,
+          <b>빛 시계의 거울을 누르면</b> 시계가 섰다가 다시 갑니다.
+        </p></div>
       </div>`;
   }
 
   function bindControls(root, onChange) {
+    onChangeCb = onChange;      // 3D 에서 조작해도 측정값이 갱신되도록
     const setB = LabUI.bindSlider(root, 'beta', state, 'beta', (v) => `${v.toFixed(3)} c`, () => {
       trail.length = 0; onChange();
     });
