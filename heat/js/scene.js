@@ -77,6 +77,8 @@ const HeatScene = (() => {
     buildCup();
     buildThermo();
     buildPlaceholders();
+    buildSteppers();
+    setupPointer(canvas);
 
     // 교과서 그림 액자 (배경 소품)
     LabUI.addPoster(scene, '../assets/thumbs/heat.jpg', { x: -7, y: 0, z: 5, ry: 0.3 });
@@ -225,6 +227,9 @@ const HeatScene = (() => {
     placed = {};
     tools.forEach((t) => { placed[t.id] = false; });
     state.shakes = 0; state.shaking = false; shakeTarget = 0; shakePhase = 0;
+    releaseDrag(); dropping = false;
+    cupGroup.position.y = 0;
+    if (thermo) thermo.position.y = 0;
     applyPlacement();
   }
   function placeTool(id) { placed[id] = true; applyPlacement(); }
@@ -243,6 +248,144 @@ const HeatScene = (() => {
     return Math.abs(point.y - slots[id].y) <= 3.0 ? 'ok' : 'wrong';
   }
   function slotName(id) { return slots[id].name; }
+
+  /* ══ 화면에서 직접 조작 ═══════════════════════
+     · 컵을 «잡아 올렸다 내리면» 한 번 흔든 것으로 센다
+     · 얼마나 높이 들어 올렸는지가 그대로 «흔드는 높이 h» 가 된다
+     · 컵 옆 ＋ / － 로 모래의 양을 바꾼다                            */
+  const UNIT_PER_M = 5;      // 화면의 5 단위를 실제 1 m 로 본다
+  const MAX_LIFT = 3.0;      // 0.6 m 까지 들어 올릴 수 있다 (슬라이더 최댓값과 같다)
+  let stepSand = null;
+  let drag = null;           // { off, bottom, peak, up }
+  let dropping = false;      // 손을 놓아 제자리로 내려오는 중
+  let onChangeCb = null;
+  let canvasEl = null;       // 카메라 조작을 되돌릴 때 쓴다
+
+  /**
+   * 잡고 있던 컵을 놓아 준다.
+   * «처음으로»·«다시 하기» 처럼 끌던 도중에 끼어드는 길이 있으므로,
+   * 손을 뗀 것으로 치고 카메라 조작도 반드시 되돌려 놓는다.
+   */
+  function releaseDrag() {
+    if (drag && camera && canvasEl) camera.attachControl(canvasEl, true);
+    drag = null;
+  }
+
+  function buildSteppers() {
+    stepSand = LabUI.makeStepper(scene, 'Sand');
+  }
+
+  /** 모래 윗면 옆에 ＋ / － 를 띄운다 — 모래가 쌓일수록 따라 올라간다 */
+  function layoutSteppers() {
+    if (!stepSand) return;
+    const top = 0.15 + (0.5 + state.sandMass * 3.2);
+    stepSand.place(-3.2, top + 0.5, -0.9, 0.8);
+    stepSand.setEnabled(allPlaced());
+  }
+
+  /** 3D 에서 값을 바꿔도 아래쪽 조작 막대가 같은 값을 보이게 한다 */
+  function syncControls() {
+    const put = (id, v, txt) => {
+      const el = document.querySelector('#' + id);
+      if (el) el.value = v;
+      const out = document.querySelector('#' + id + 'Out');
+      if (out) out.textContent = txt;
+    };
+    put('sandMass', state.sandMass, `${state.sandMass.toFixed(2)} kg`);
+    put('height', state.height, `${state.height.toFixed(2)} m`);
+    const so = document.querySelector('#shakeOut');
+    if (so) so.textContent = `${state.shakes} 회`;
+  }
+
+  function bumpSand(d) {
+    // 슬라이더와 똑같은 범위 · 간격을 지킨다
+    state.sandMass = Math.max(0.1, Math.min(0.8, +(state.sandMass + d * 0.05).toFixed(2)));
+    update();
+    if (onChangeCb) onChangeCb();
+  }
+
+  /**
+   * 들어 올린 거리를 흔드는 높이로 옮긴다 (슬라이더와 같은 0.05 m 간격).
+   * 살짝 흔들린 정도(LIFT_MIN 미만)는 «들어 올렸다» 고 보지 않아 높이를 건드리지 않는다.
+   */
+  const LIFT_MIN = 0.5;      // 0.1 m — 한 번 흔든 것으로 세는 최소 높이
+  function setHeightFromLift(lift) {
+    if (lift < LIFT_MIN) return;
+    const h = Math.round(lift / UNIT_PER_M / 0.05) * 0.05;
+    state.height = +Math.max(0.1, Math.min(0.6, h)).toFixed(2);
+  }
+
+  /** 화면의 한 점을 z = 0 면 위의 높이로 바꾼다 */
+  function pointerY() {
+    const ray = scene.createPickingRay(scene.pointerX, scene.pointerY, null, camera);
+    const plane = B().Plane.FromPositionAndNormal(
+      new (B().Vector3)(0, 0, 0), new (B().Vector3)(0, 0, 1));
+    const d = ray.intersectsPlane(plane);
+    if (d === null) return null;
+    return ray.origin.add(ray.direction.scale(d)).y;
+  }
+
+  function moveCup(y) {
+    cupGroup.position.y = y;
+    if (thermo) thermo.position.y = y;      // 온도계도 컵을 따라 움직인다
+  }
+
+  function setupPointer(canvas) {
+    canvasEl = canvas;
+    scene.onPointerObservable.add((pi) => {
+      const T = B().PointerEventTypes;
+      const nm = pi.pickInfo && pi.pickInfo.pickedMesh ? pi.pickInfo.pickedMesh.name : '';
+
+      if (pi.type === T.POINTERDOWN) {
+        if (!allPlaced()) return;                 // 배치가 끝나기 전에는 무시한다
+        if (nm === 'btnAddSand') { bumpSand(+1); return; }
+        if (nm === 'btnSubSand') { bumpSand(-1); return; }
+        // 컵 · 뚜껑 · 모래 · 온도계 자루 — 어디를 잡아도 컵째로 들린다
+        if (nm === 'cup' || nm === 'lid' || nm === 'sand' || nm === 'thStick' || nm === 'thBulb') {
+          if (state.shaking) return;              // 자동으로 흔드는 중에는 잡지 않는다
+          const y = pointerY();
+          if (y === null) return;
+          dropping = false;
+          const y0 = cupGroup.position.y;
+          drag = { off: y - y0, bottom: y0, peak: y0, up: false };
+          camera.detachControl();
+        }
+        return;
+      }
+
+      if (pi.type === T.POINTERMOVE && drag) {
+        const y = pointerY();
+        if (y === null) return;
+        const ny = Math.max(0, Math.min(MAX_LIFT, y - drag.off));
+        moveCup(ny);
+        if (ny > drag.peak) drag.peak = ny;
+        if (ny < drag.bottom) drag.bottom = ny;
+        setHeightFromLift(drag.peak - drag.bottom);
+        // 충분히 들어 올렸다가 다시 내려오면 한 번 흔든 것으로 센다
+        if (!drag.up && ny - drag.bottom >= LIFT_MIN) drag.up = true;
+        if (drag.up && ny <= drag.bottom + 0.25) {
+          state.shakes += 1;
+          drag.up = false; drag.bottom = ny; drag.peak = ny;
+        }
+        update();
+        if (onChangeCb) onChangeCb();
+        return;
+      }
+
+      if (pi.type === T.POINTERUP && drag) {
+        // 들어 올린 채로 손을 놓으면 떨어지면서 한 번 더 흔들린다
+        if (drag.up || cupGroup.position.y - drag.bottom >= LIFT_MIN) {
+          setHeightFromLift(drag.peak - drag.bottom);
+          state.shakes += 1;
+        }
+        drag = null;
+        dropping = true;
+        camera.attachControl(canvas, true);
+        update();
+        if (onChangeCb) onChangeCb();
+      }
+    });
+  }
 
   /* ══ 갱신 ═══════════════════════════════════ */
   function update() {
@@ -263,10 +406,21 @@ const HeatScene = (() => {
       thermo._col.position.y = 3.0 + colH / 2;
       drawThermo();
     }
+
+    layoutSteppers();
+    syncControls();
   }
 
   /** 흔들기 애니메이션. 한 주기마다 횟수를 1 올린다. */
   function tick(dt) {
+    // 손을 놓은 컵이 제자리로 내려오는 동안
+    if (dropping) {
+      const y = Math.max(0, cupGroup.position.y - dt * 9);
+      moveCup(y);
+      if (y <= 0) dropping = false;
+      return true;
+    }
+    if (drag) return false;                 // 손으로 잡고 있는 동안에는 자동으로 흔들지 않는다
     if (!state.shaking) return false;
     shakePhase += dt * 7.5;
     cupGroup.position.y = Math.sin(shakePhase) * 0.9;
@@ -297,7 +451,8 @@ const HeatScene = (() => {
   }
 
   /* ══ 컨트롤 ═════════════════════════════════ */
-  const guide = '컵을 50 회씩 흔들며 모래의 온도를 재어 보세요. <b>모래의 양</b>을 바꾸면 온도 상승이 달라질까요?';
+  const guide = '<b>컵을 잡아 올렸다 내리면</b> 한 번 흔들립니다. 여러 번 흔들며 모래의 온도를 재어 보세요. '
+    + '<b>모래의 양</b>을 바꾸면 온도 상승이 달라질까요?';
   const prepGuide = '점선으로 표시된 자리에 컵·모래·온도계를 끌어다 놓아 실험을 준비하세요.';
 
   function controlsHTML() {
@@ -306,6 +461,14 @@ const HeatScene = (() => {
         { min: 0.1, max: 0.8, step: 0.05, value: state.sandMass, fmt: (v) => `${v.toFixed(2)} kg` })}
       ${LabUI.slider('height', '흔드는<br>높이 <i>h</i>',
         { min: 0.1, max: 0.6, step: 0.05, value: state.height, fmt: (v) => `${v.toFixed(2)} m` })}
+      <div class="control">
+        <div class="clabel">직접<br>조작</div>
+        <div class="cbody"><p class="hands-on">
+          <b>컵을 잡아 올렸다 내리면</b> 한 번 흔든 것으로 셉니다 —
+          올린 높이가 그대로 <b>흔드는 높이 <i>h</i></b> 가 됩니다.
+          컵 옆 <b>＋ · －</b> 로 모래의 양을 바꿉니다.
+        </p></div>
+      </div>
       <div class="control">
         <div class="clabel">흔든<br>횟수</div>
         <div class="cbody">
@@ -321,6 +484,7 @@ const HeatScene = (() => {
   }
 
   function bindControls(root, onChange) {
+    onChangeCb = onChange;      // 3D 에서 조작해도 측정값이 갱신되도록
     LabUI.bindSlider(root, 'sandMass', state, 'sandMass', (v) => `${v.toFixed(2)} kg`, onChange);
     LabUI.bindSlider(root, 'height', state, 'height', (v) => `${v.toFixed(2)} m`, onChange);
 
@@ -335,6 +499,7 @@ const HeatScene = (() => {
     });
     root.querySelector('#resetBtn').addEventListener('click', () => {
       state.shakes = 0; state.shaking = false; shakeTarget = 0; shakePhase = 0;
+      releaseDrag(); dropping = false;
       cupGroup.position.y = 0;
       if (thermo) thermo.position.y = 0;
       shake.textContent = '흔들기 (50회)';

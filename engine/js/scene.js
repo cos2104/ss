@@ -14,6 +14,13 @@ const EngineScene = (() => {
   let hotTex, coldTex;
   let placed = {};
 
+  // 화면에서 직접 조작하기 위한 것들
+  let stepT1 = null, stepT2 = null, stepQ1 = null;  // 3D 화면의 ＋ / － 단추
+  let onChangeCb = null;                            // 3D 로 조작해도 측정값을 갱신한다
+  let ctrlRoot = null;                              // 하단 조작 막대 (값 동기화용)
+
+  const WHEEL_Y = 8.4;                              // 플라이휠의 축 높이
+
   const state = {
     T1: 600,        // 고열원 온도 (K)
     T2: 300,        // 저열원 온도 (K)
@@ -78,14 +85,16 @@ const EngineScene = (() => {
     buildReservoirs();
     buildEngine();
     buildPlaceholders();
+    buildSteppers();
 
     glow.addExcludedMesh(scene.getMeshByName('hotFace'));
     glow.addExcludedMesh(scene.getMeshByName('coldFace'));
 
     // 교과서 그림 액자 (배경 소품)
-    LabUI.addPoster(scene, '../assets/thumbs/engine.jpg', { x: -8, y: 0, z: 5.5, ry: 0.3 });
+    LabUI.addPoster(scene, '../assets/thumbs/engine.jpg', { x: -13.5, y: 0, z: 5.0 });
 
     resetTools();
+    setupPointer(canvas);
     return scene;
   }
 
@@ -290,6 +299,7 @@ const EngineScene = (() => {
     }
     drawFlow();
     layoutPiston();
+    layoutSteppers();
   }
 
   function layoutPiston() {
@@ -306,6 +316,136 @@ const EngineScene = (() => {
     if (phase > Math.PI * 2) { phase -= Math.PI * 2; cycles += 1; }
     layoutPiston();
     return true;
+  }
+
+  /* ══ 화면에서 직접 조작 ═══════════════════════
+     · 고열원·저열원 블록 위의 ＋ / － 로 두 열원의 온도를 조절한다
+     · 고열원 → 기관으로 흐르는 Q₁ 화살표 위의 ＋ / － 로 공급 열량을 조절한다
+     · 플라이휠을 손으로 «돌리면» 시동이 걸린다 (짧게 누르면 켜고 끈다)      */
+
+  function buildSteppers() {
+    stepT1 = LabUI.makeStepper(scene, 'T1', { addColor: '#c23a2a' });
+    stepT2 = LabUI.makeStepper(scene, 'T2', { addColor: '#2f6ad0' });
+    stepQ1 = LabUI.makeStepper(scene, 'Q1', { addColor: '#e8663f' });
+  }
+
+  /** 단추 자리를 잡는다 — 부품과 겹치지 않게 열원 블록 «위», 열 화살표 «위» 에 둔다 */
+  function layoutSteppers() {
+    if (!stepT1) return;
+    const on = allPlaced();
+    stepT1.place(-8, 6.5, -1.0, 1.15);    // 고열원 블록 위 (블록 꼭대기 y = 5.4)
+    stepT2.place(8, 6.5, -1.0, 1.15);     // 저열원 블록 위
+    stepQ1.place(-3.6, 4.6, -1.0, 0.95);  // Q₁ 화살표 위 (블록과 실린더 사이)
+    stepT1.setEnabled(on);
+    stepT2.setEnabled(on);
+    stepQ1.setEnabled(on);
+  }
+
+  /** 3D 에서 바꾼 값을 하단 슬라이더에도 그대로 비춰 준다 */
+  function syncSlider(id, v, text) {
+    if (!ctrlRoot) return;
+    const el = ctrlRoot.querySelector('#' + id);
+    const out = ctrlRoot.querySelector('#' + id + 'Out');
+    if (el) el.value = v;
+    if (out) out.textContent = text;
+  }
+
+  function syncRunBtn() {
+    const btn = (ctrlRoot || document).querySelector('#runBtn');
+    if (!btn) return;
+    btn.textContent = state.running ? '가동 중' : '▶ 가동';
+    btn.classList.toggle('run', state.running);
+    btn.classList.toggle('off', !state.running);
+  }
+
+  function afterChange() {
+    update();
+    if (onChangeCb) onChangeCb();
+  }
+
+  // 값의 최소·최대와 눈금은 하단 슬라이더와 똑같이 유지한다
+  function bumpT1(d) {
+    state.T1 = Math.max(350, Math.min(900, state.T1 + d * 10));
+    if (state.T2 >= state.T1) {               // 저열원이 고열원보다 뜨거울 수는 없다
+      state.T2 = state.T1 - 10;
+      syncSlider('T2', state.T2, `${state.T2} K`);
+    }
+    syncSlider('T1', state.T1, `${state.T1} K`);
+    afterChange();
+  }
+
+  function bumpT2(d) {
+    let v = Math.max(250, Math.min(500, state.T2 + d * 10));
+    if (v >= state.T1) v = state.T1 - 10;     // 고열원을 넘어서지 못하게 막는다
+    state.T2 = v;
+    syncSlider('T2', state.T2, `${state.T2} K`);
+    afterChange();
+  }
+
+  function bumpQ1(d) {
+    state.Q1 = Math.max(200, Math.min(2000, state.Q1 + d * 50));
+    syncSlider('Q1', state.Q1, `${state.Q1} J`);
+    afterChange();
+  }
+
+  /** 마우스가 가리키는 점을 플라이휠이 놓인 면(z = 0) 위로 옮겨,
+      바퀴 축에서 본 «각도»를 돌려준다 (돌린 양을 재는 데 쓴다) */
+  function crankAngle() {
+    const ray = scene.createPickingRay(scene.pointerX, scene.pointerY, null, camera);
+    const plane = B().Plane.FromPositionAndNormal(
+      new (B().Vector3)(0, WHEEL_Y, 0), new (B().Vector3)(0, 0, 1));
+    const d = ray.intersectsPlane(plane);
+    if (d === null) return null;
+    const pt = ray.origin.add(ray.direction.scale(d));
+    return Math.atan2(pt.y - WHEEL_Y, pt.x);
+  }
+
+  let crank = null;
+
+  function setupPointer(canvas) {
+    scene.onPointerObservable.add((pi) => {
+      const T = B().PointerEventTypes;
+      const m = pi.pickInfo && pi.pickInfo.pickedMesh;
+      const nm = m ? m.name : '';
+
+      if (pi.type === T.POINTERDOWN) {
+        if (!allPlaced()) return;             // 배치가 끝나야 조작할 수 있다
+        if (nm === 'btnAddT1') { bumpT1(+1); return; }
+        if (nm === 'btnSubT1') { bumpT1(-1); return; }
+        if (nm === 'btnAddT2') { bumpT2(+1); return; }
+        if (nm === 'btnSubT2') { bumpT2(-1); return; }
+        if (nm === 'btnAddQ1') { bumpQ1(+1); return; }
+        if (nm === 'btnSubQ1') { bumpQ1(-1); return; }
+
+        if (nm === 'flywheel' || /^spoke/.test(nm)) {
+          const a = crankAngle();
+          if (a === null) return;
+          crank = { ang: a, turned: 0, was: state.running };
+          state.running = false;              // 손으로 잡고 있는 동안은 저절로 돌지 않는다
+          syncRunBtn();
+          camera.detachControl();
+        }
+      } else if (pi.type === T.POINTERMOVE && crank) {
+        const a = crankAngle();
+        if (a === null) return;
+        let d = a - crank.ang;                // 한 바퀴를 넘어가는 지점을 이어 준다
+        while (d > Math.PI) d -= Math.PI * 2;
+        while (d < -Math.PI) d += Math.PI * 2;
+        crank.ang = a;
+        crank.turned += Math.abs(d);
+        phase += d;                           // 손으로 돌린 만큼 피스톤도 함께 움직인다
+        if (phase > Math.PI * 2) phase -= Math.PI * 2;
+        if (phase < 0) phase += Math.PI * 2;
+        layoutPiston();
+      } else if (pi.type === T.POINTERUP && crank) {
+        // 조금이라도 «돌리면» 시동이 걸리고, 그냥 짧게 누르면 켜고 끈다
+        state.running = crank.turned >= 0.5 ? true : !crank.was;
+        crank = null;
+        camera.attachControl(canvas, true);
+        syncRunBtn();
+        if (onChangeCb) onChangeCb();
+      }
+    });
   }
 
   function resetCamera() {
@@ -333,10 +473,20 @@ const EngineScene = (() => {
       <div class="control">
         <div class="clabel">기관<br>가동</div>
         <button class="power${state.running ? ' run' : ' off'}" id="runBtn">${state.running ? '가동 중' : '▶ 가동'}</button>
+      </div>
+      <div class="control">
+        <div class="clabel">직접<br>조작</div>
+        <div class="cbody"><p class="hands-on">
+          두 열원 블록 위의 <b>＋ · －</b> 로 온도를, <b>Q₁ 화살표 위의 ＋ · －</b> 로
+          공급 열량을 바꿉니다. <b>플라이휠을 손으로 돌리면</b> 시동이 걸리고,
+          짧게 누르면 멈춥니다.
+        </p></div>
       </div>`;
   }
 
   function bindControls(root, onChange) {
+    onChangeCb = onChange;      // 3D 에서 조작해도 측정값이 갱신되도록
+    ctrlRoot = root;
     const clampT = () => {
       // 저열원이 고열원보다 뜨거울 수는 없다
       if (state.T2 >= state.T1) {

@@ -16,6 +16,8 @@ const SemiScene = (() => {
   let scene, camera;
   let lattice, atoms = [], bonds = [], carriers = [];
   let placed = {};
+  let onChangeCb = null;        // 3D 에서 조작해도 측정값이 갱신되도록
+  let panelRoot = null;         // 아래쪽 조작 막대 — 3D 조작에 맞춰 눈금을 맞춘다
 
   const state = {
     doping: 'pure',     // pure | n | p
@@ -35,6 +37,11 @@ const SemiScene = (() => {
     p: { name: 'p형 반도체', atom: '붕소 (B)', valence: 3, color: '#e8a14a',
       carrier: '양공 (빈자리)', tag: 'con' },
   };
+
+  // 불순물을 꽂아 둔 격자 자리 — 학생이 화면에서 직접 고르면 이 목록이 바뀐다.
+  // 아래쪽 «바꿔 넣은 원자 수» 버튼을 쓰면 기본 순서대로 다시 배치한다.
+  const ORDER = [5, 10, 6, 9, 1, 14];
+  let sites = ORDER.slice(0, state.dopeCount);
 
   const tools = [
     { id: 'board', label: '자석 붙는 칠판', icon: 'screenBoard' },
@@ -74,8 +81,9 @@ const SemiScene = (() => {
     scene = new (B().Scene)(engine);
     scene.clearColor = B().Color4.FromHexString('#182230ff');
 
+    // 칠판 양옆의 «원자 상자·온도계·전압 스위치» 까지 한눈에 들어오도록 조금 물러선다
     camera = new (B().ArcRotateCamera)(
-      'camSm', -Math.PI / 2, 0.72, 18, new (B().Vector3)(0, 1.0, 0), scene
+      'camSm', -Math.PI / 2, 0.72, 22, new (B().Vector3)(0, 1.0, 0), scene
     );
     camera.attachControl(canvas, true);
     camera.lowerRadiusLimit = 9;
@@ -94,6 +102,10 @@ const SemiScene = (() => {
     buildLattice();
     buildCarriers();
     buildPlaceholders();
+    buildTray();
+    buildThermo();
+    buildSwitch();
+    setupPointer(canvas);
 
     // 상시 바닥 — 도구를 놓기 전에도 기본 배경이 보인다
     const __base = B().MeshBuilder.CreateGround('scBase', { width: 26, height: 18 }, scene);
@@ -177,6 +189,12 @@ const SemiScene = (() => {
         g._els = els;
         g._i = i; g._k = k;
         g.parent = lattice;
+        // 화면에서 원자를 집을 수 있도록 부품마다 «몇 번 자리» 인지 붙여 둔다
+        const idx = atoms.length;
+        g._idx = idx;
+        core._atomIdx = idx;
+        lab._atomIdx = idx;
+        els.forEach((s) => { s._atomIdx = idx; });
         atoms.push(g);
       }
     }
@@ -247,10 +265,379 @@ const SemiScene = (() => {
     });
   }
 
+  /* ══ 화면에서 직접 조작 ═══════════════════════
+     · 왼쪽 «원자 상자» 의 인(P)·붕소(B) 모형을 집어 격자의 규소 자리에 끌어다 붙인다
+     · 꽂아 둔 불순물 원자를 다시 집어 격자 밖으로 끌어내면 규소로 돌아간다
+     · 오른쪽 온도계 손잡이를 위아래로 끌거나 ＋/－ 단추로 온도를 바꾼다
+     · 앞쪽 전압 스위치를 눌러 전압을 걸고 끊는다                              */
+  const TRAY_X = -8.2, TRAY_Z = -1.6;              // 원자 상자 자리
+  const TH_X = 8.2, TH_Z = -0.6;                   // 온도계 자리
+  const TH_Y0 = 0.55, TH_Y1 = 3.05;                // 손잡이가 오르내리는 높이
+  const SW_X = 0, SW_Z = -7.4;                     // 전압 스위치 자리
+
+  let trayN, trayP, thermoFill, thermoKnob, switchKnob;
+  let tempTag, switchTag;
+  let ghost, ghostTag, dropRing;
+  let stepT = null;
+  let hold = null;      // 지금 손에 든 모형 원자 { type, from, moved, px, py, target }
+  let grab = null;      // 온도계 손잡이를 잡고 있는가
+
+  /** 화면을 향해 서는 이름표 판 */
+  function makeTag(name, w, h) {
+    const TW = Math.round(w * 110), THh = Math.round(h * 110);
+    const p = B().MeshBuilder.CreatePlane(name, { width: w, height: h }, scene);
+    const tex = new (B().DynamicTexture)(name + 'T', { width: TW, height: THh }, scene, true);
+    tex.hasAlpha = true;
+    const m = new (B().StandardMaterial)(name + 'M', scene);
+    m.diffuseTexture = tex; m.opacityTexture = tex;
+    m.emissiveColor = new (B().Color3)(1, 1, 1);
+    m.specularColor = new (B().Color3)(0, 0, 0);
+    m.backFaceCulling = false;
+    p.material = m;
+    p.billboardMode = B().Mesh.BILLBOARDMODE_Y;
+    p.isPickable = false;
+    p._tex = tex; p._tw = TW; p._th = THh;
+    return p;
+  }
+
+  function drawTag(p, text, color, bg) {
+    const c = p._tex.getContext();
+    c.clearRect(0, 0, p._tw, p._th);
+    if (bg) { c.fillStyle = bg; c.fillRect(0, 0, p._tw, p._th); }
+    c.fillStyle = color || '#e8eef6';
+    c.font = `bold ${Math.round(p._th * 0.5)}px "Noto Sans KR", sans-serif`;
+    c.textAlign = 'center'; c.textBaseline = 'middle';
+    c.fillText(text, p._tw / 2, p._th / 2 + 1);
+    p._tex.update();
+  }
+
+  /** 모형 원자 하나 — 상자에 든 것과 손에 든 것에 함께 쓴다 */
+  function makeModelAtom(name, hex) {
+    const s = B().MeshBuilder.CreateSphere(name, { diameter: 1.3, segments: 14 }, scene);
+    s.material = mat(name + 'M', hex, '#e4eaf2', 64);
+    return s;
+  }
+
+  /** 왼쪽 «원자 상자» — 인(P) 과 붕소(B) 모형이 담겨 있다 */
+  function buildTray() {
+    const base = B().MeshBuilder.CreateBox('smTrayBase',
+      { width: 2.6, height: 0.24, depth: 4.2 }, scene);
+    base.position.set(TRAY_X, 0.12, TRAY_Z);
+    base.material = mat('smTrayBaseM', '#37445a', '#68789a', 32);
+    base.isPickable = false;
+
+    trayN = makeModelAtom('smTrayN', DOPANTS.n.color);
+    trayN.position.set(TRAY_X, 0.9, TRAY_Z - 1.3);
+    trayP = makeModelAtom('smTrayP', DOPANTS.p.color);
+    trayP.position.set(TRAY_X, 0.9, TRAY_Z + 1.3);
+
+    const tagN = makeTag('smTrayNTag', 2.4, 0.5);
+    tagN.position.set(TRAY_X, 1.85, TRAY_Z - 1.3);
+    drawTag(tagN, '인 P · 전자 5', DOPANTS.n.color);
+    const tagP = makeTag('smTrayPTag', 2.4, 0.5);
+    tagP.position.set(TRAY_X, 1.85, TRAY_Z + 1.3);
+    drawTag(tagP, '붕소 B · 전자 3', DOPANTS.p.color);
+    const tagT = makeTag('smTrayTag', 2.8, 0.52);
+    tagT.position.set(TRAY_X, 2.75, TRAY_Z);
+    drawTag(tagT, '원자 상자 — 끌어다 붙이기', '#cfe0f2');
+
+    // 손에 든 모형 원자와, 붙일 자리를 알려 주는 고리
+    ghost = makeModelAtom('smHeldAtom', DOPANTS.n.color);
+    ghost.isPickable = false;
+    ghost.setEnabled(false);
+    ghostTag = makeTag('smHeldTag', 1.4, 0.46);
+    ghostTag.position.set(0, 1.0, 0);
+    ghostTag.parent = ghost;
+
+    dropRing = B().MeshBuilder.CreateTorus('smDropRing',
+      { diameter: 2.0, thickness: 0.11, tessellation: 28 }, scene);
+    const rm = new (B().StandardMaterial)('smDropRingM', scene);
+    rm.emissiveColor = B().Color3.FromHexString('#ffd84a');
+    rm.disableLighting = true;
+    dropRing.material = rm;
+    dropRing.isPickable = false;
+    dropRing.setEnabled(false);
+  }
+
+  /** 오른쪽 온도계 — 손잡이를 위아래로 끌어 온도를 정한다 */
+  function buildThermo() {
+    const tube = B().MeshBuilder.CreateCylinder('smThermoTube',
+      { diameter: 0.6, height: 2.9, tessellation: 20 }, scene);
+    tube.position.set(TH_X, 1.85, TH_Z);
+    const tm = mat('smThermoTubeM', '#c8d4e4', '#ffffff', 96);
+    tm.alpha = 0.45;
+    tube.material = tm;
+
+    const bulb = B().MeshBuilder.CreateSphere('smThermoBulb', { diameter: 0.9, segments: 14 }, scene);
+    bulb.position.set(TH_X, 0.4, TH_Z);
+    const bm = new (B().StandardMaterial)('smThermoBulbM', scene);
+    bm.emissiveColor = B().Color3.FromHexString('#e0503a');
+    bm.disableLighting = true;
+    bulb.material = bm;
+    bulb.isPickable = false;
+
+    thermoFill = B().MeshBuilder.CreateCylinder('smThermoFill',
+      { diameter: 0.34, height: 1, tessellation: 16 }, scene);
+    const fm = new (B().StandardMaterial)('smThermoFillM', scene);
+    fm.emissiveColor = B().Color3.FromHexString('#e0503a');
+    fm.disableLighting = true;
+    thermoFill.material = fm;
+    thermoFill.isPickable = false;
+
+    thermoKnob = B().MeshBuilder.CreateBox('smTempKnob',
+      { width: 1.15, height: 0.28, depth: 0.8 }, scene);
+    thermoKnob.material = mat('smTempKnobM', '#e8a14a', '#ffd8a0', 64);
+
+    tempTag = makeTag('smTempTag', 2.4, 0.55);
+    tempTag.position.set(TH_X, 3.75, TH_Z);
+
+    stepT = LabUI.makeStepper(scene, 'Temp');
+  }
+
+  /** 앞쪽 전압 스위치 */
+  function buildSwitch() {
+    const base = B().MeshBuilder.CreateBox('smSwitchBase',
+      { width: 2.2, height: 0.36, depth: 1.3 }, scene);
+    base.position.set(SW_X, 0.18, SW_Z);
+    base.material = mat('smSwitchBaseM', '#37445a', '#68789a', 32);
+
+    switchKnob = B().MeshBuilder.CreateBox('smSwitchKnob',
+      { width: 0.8, height: 0.62, depth: 0.8 }, scene);
+    switchKnob.position.set(SW_X, 0.6, SW_Z);
+    switchKnob.material = mat('smSwitchKnobM', '#b8c4d4', '#ffffff', 64);
+
+    switchTag = makeTag('smSwitchTag', 2.6, 0.55);
+    switchTag.position.set(SW_X, 1.5, SW_Z);
+  }
+
+  /* ── 불순물 자리 다루기 ────────────────────── */
+  /** 지금 실제로 꽂혀 있는 자리 (순수 상태면 하나도 없다) */
+  function activeSites() { return state.doping === 'pure' ? [] : sites; }
+
+  function insertDopant(idx, type) {
+    if (state.doping === 'pure') sites = [];      // 순수 상태에서 처음 꽂으면 자리를 새로 잡는다
+    if (sites.indexOf(idx) >= 0 || sites.length >= 6) return false;
+    sites.push(idx);
+    // 한 결정에는 한 종류만 넣는다 — 다른 원자를 꽂으면 이미 꽂힌 것도 그 종류가 된다
+    state.doping = type;
+    state.dopeCount = sites.length;
+    return true;
+  }
+
+  function pullDopant(idx) {
+    const i = sites.indexOf(idx);
+    if (i < 0) return;
+    sites.splice(i, 1);
+    if (sites.length === 0) state.doping = 'pure';
+    else state.dopeCount = sites.length;
+  }
+
+  /** 아직 비어 있는 기본 자리 하나 */
+  function nextFreeSite() {
+    const on = activeSites();
+    for (let i = 0; i < ORDER.length; i++) if (on.indexOf(ORDER[i]) < 0) return ORDER[i];
+    return null;
+  }
+
+  /** 화면의 한 점을 높이 y 인 수평면 위의 세계 좌표로 바꾼다 */
+  function pointerOnPlane(y) {
+    const ray = scene.createPickingRay(scene.pointerX, scene.pointerY, null, camera);
+    const plane = B().Plane.FromPositionAndNormal(
+      new (B().Vector3)(0, y, 0), new (B().Vector3)(0, 1, 0));
+    const d = ray.intersectsPlane(plane);
+    if (d === null) return null;
+    return ray.origin.add(ray.direction.scale(d));
+  }
+
+  /** 그 점에 가장 가까운 «빈» 규소 자리 */
+  function nearSite(pt) {
+    const i = Math.round(pt.x / PITCH + (NX - 1) / 2);
+    const k = Math.round(pt.z / PITCH + (NZ - 1) / 2);
+    if (i < 0 || i >= NX || k < 0 || k >= NZ) return null;
+    const idx = i * NZ + k;
+    const p = atoms[idx].position;
+    if (Math.abs(pt.x - p.x) > PITCH * 0.62 || Math.abs(pt.z - p.z) > PITCH * 0.62) return null;
+    if (activeSites().indexOf(idx) >= 0) return null;
+    return idx;
+  }
+
+  /* ── 집기 · 끌기 · 놓기 ────────────────────── */
+  function startHold(type, from, at) {
+    hold = { type, from, moved: false, px: scene.pointerX, py: scene.pointerY, target: null };
+    const d = DOPANTS[type];
+    ghost.material.diffuseColor = B().Color3.FromHexString(d.color);
+    drawTag(ghostTag, type === 'n' ? '인 P' : '붕소 B', d.color);
+    ghost.position.copyFrom(at);
+    ghost.position.y = ATOM_Y + 1.0;
+    ghost.setEnabled(true);
+  }
+
+  function moveHold() {
+    const pt = pointerOnPlane(ATOM_Y);
+    if (!pt) return;
+    if (Math.abs(scene.pointerX - hold.px) > 5 || Math.abs(scene.pointerY - hold.py) > 5) {
+      hold.moved = true;
+    }
+    ghost.position.set(pt.x, ATOM_Y + 1.0, pt.z);
+    const idx = nearSite(pt);
+    hold.target = idx;
+    if (idx === null) {
+      dropRing.setEnabled(false);
+    } else {
+      dropRing.setEnabled(true);
+      dropRing.position.set(atoms[idx].position.x, ATOM_Y - 0.55, atoms[idx].position.z);
+    }
+  }
+
+  function dropHold(canvas) {
+    if (hold.target !== null && hold.target !== undefined) {
+      insertDopant(hold.target, hold.type);
+    } else if (!hold.moved && hold.from === null) {
+      // 상자의 원자를 «톡» 누르기만 하면 가운데 빈자리에 들어간다
+      const free = nextFreeSite();
+      if (free !== null) insertDopant(free, hold.type);
+    }
+    // 자리를 못 찾으면 상자로 돌아간 것으로 본다 (꽂혀 있던 것은 이미 빠져 있다)
+    hold = null;
+    ghost.setEnabled(false);
+    dropRing.setEnabled(false);
+    camera.attachControl(canvas, true);
+    update();
+    syncPanel();
+    if (onChangeCb) onChangeCb();
+  }
+
+  /* ── 온도 · 전압 ───────────────────────────── */
+  function setTemp(v) {
+    const t = Math.max(100, Math.min(800, Math.round(v / 10) * 10));
+    if (t === state.temp) return;
+    state.temp = t;
+    update();
+    syncPanel();
+    if (onChangeCb) onChangeCb();
+  }
+
+  function bumpTemp(d) { setTemp(state.temp + d * 50); }
+
+  function dragTemp() {
+    const ray = scene.createPickingRay(scene.pointerX, scene.pointerY, null, camera);
+    const plane = B().Plane.FromPositionAndNormal(
+      new (B().Vector3)(TH_X, 0, TH_Z), new (B().Vector3)(0, 0, 1));
+    const d = ray.intersectsPlane(plane);
+    if (d === null) return;
+    const pt = ray.origin.add(ray.direction.scale(d));
+    const f = Math.max(0, Math.min(1, (pt.y - TH_Y0) / (TH_Y1 - TH_Y0)));
+    setTemp(100 + f * 700);
+  }
+
+  function toggleField() {
+    state.field = !state.field;
+    update();
+    syncPanel();
+    if (onChangeCb) onChangeCb();
+  }
+
+  /* ── 포인터 ───────────────────────────────── */
+  function setupPointer(canvas) {
+    scene.onPointerObservable.add((pi) => {
+      const T = B().PointerEventTypes;
+      const mesh = pi.pickInfo && pi.pickInfo.pickedMesh;
+      const nm = mesh ? mesh.name : '';
+
+      if (pi.type === T.POINTERDOWN) {
+        if (!allPlaced()) return;
+
+        if (nm === 'btnAddTemp') { bumpTemp(+1); return; }
+        if (nm === 'btnSubTemp') { bumpTemp(-1); return; }
+        if (nm === 'smSwitchBase' || nm === 'smSwitchKnob') { toggleField(); return; }
+
+        if (nm === 'smTempKnob' || nm === 'smThermoTube') {
+          grab = true;
+          camera.detachControl();
+          return;
+        }
+
+        // 상자에서 모형 원자를 집는다
+        if (nm === 'smTrayN' || nm === 'smTrayP') {
+          startHold(nm === 'smTrayN' ? 'n' : 'p', null, mesh.position);
+          camera.detachControl();
+          return;
+        }
+
+        // 격자에 꽂아 둔 불순물 원자를 뽑아 든다
+        const idx = mesh ? mesh._atomIdx : undefined;
+        if (idx !== undefined && activeSites().indexOf(idx) >= 0) {
+          const type = state.doping;
+          const at = atoms[idx].position.clone();
+          pullDopant(idx);
+          startHold(type, idx, at);
+          camera.detachControl();
+          update();
+          syncPanel();
+          if (onChangeCb) onChangeCb();
+        }
+      } else if (pi.type === T.POINTERMOVE) {
+        if (grab) dragTemp();
+        else if (hold) moveHold();
+      } else if (pi.type === T.POINTERUP) {
+        if (grab) { grab = null; camera.attachControl(canvas, true); }
+        if (hold) dropHold(canvas);
+      }
+    });
+  }
+
+  /** 3D 에서 조작한 결과를 아래쪽 조작 막대에도 그대로 비춘다 */
+  function syncPanel() {
+    if (!panelRoot) return;
+    panelRoot.querySelectorAll('[data-doping]').forEach((b) => {
+      b.classList.toggle('on', b.getAttribute('data-doping') === state.doping);
+    });
+    panelRoot.querySelectorAll('[data-dopecount]').forEach((b) => {
+      b.classList.toggle('on', +b.getAttribute('data-dopecount') === state.dopeCount);
+    });
+    const sl = panelRoot.querySelector('#temp');
+    if (sl) sl.value = state.temp;
+    const out = panelRoot.querySelector('#tempOut');
+    if (out) out.textContent = `${state.temp} K`;
+    const f = panelRoot.querySelector('#fieldBtn');
+    if (f) {
+      f.textContent = state.field ? 'ON' : 'OFF';
+      f.classList.toggle('off', !state.field);
+    }
+  }
+
+  /** 직접 조작 부품의 자리와 겉모습을 갱신한다 */
+  function layoutHands() {
+    if (!thermoKnob) return;
+    const on = allPlaced();
+
+    const f = (state.temp - 100) / 700;
+    const h = 0.15 + f * 2.75;
+    thermoFill.scaling.y = h;
+    thermoFill.position.set(TH_X, 0.4 + h / 2, TH_Z);
+    thermoKnob.position.set(TH_X, TH_Y0 + f * (TH_Y1 - TH_Y0), TH_Z);
+    drawTag(tempTag, `${state.temp} K`, '#ffd0a0');
+
+    stepT.place(TH_X, 4.45, TH_Z, 0.8);
+    stepT.setEnabled(on);
+
+    switchKnob.rotation.x = state.field ? -0.55 : 0.55;
+    switchKnob.material.diffuseColor = B().Color3.FromHexString(state.field ? '#4ad8a0' : '#b8c4d4');
+    drawTag(switchTag, state.field ? '전압 ON' : '전압 OFF',
+      state.field ? '#4ad8a0' : '#8e9bad');
+
+    // 결정을 놓기 전에는 상자와 조절기를 쓸 수 없다
+    trayN.setEnabled(on);
+    trayP.setEnabled(on);
+    if (!on) { dropRing.setEnabled(false); ghost.setEnabled(false); }
+  }
+
   /* ══ 도구 배치 ═══════════════════════════════ */
   function resetTools() {
     placed = {};
     tools.forEach((t) => { placed[t.id] = false; });
+    sites = ORDER.slice(0, state.dopeCount);
+    hold = null; grab = null;
     applyPlacement();
   }
   function placeTool(id) { placed[id] = true; applyPlacement(); }
@@ -270,11 +657,12 @@ const SemiScene = (() => {
   function slotName(id) { return slots[id].name; }
 
   /* ══ 갱신 ═══════════════════════════════════ */
-  /** 어느 자리를 불순물로 바꿀지 — 가운데 쪽부터 고른다 */
+  /** 어느 자리를 불순물로 바꿀지 — 학생이 고른 자리, 없으면 가운데 쪽부터 고른다 */
   function dopedIndices() {
     if (state.doping === 'pure' || !placed.dopant) return [];
-    const order = [5, 10, 6, 9, 1, 14];
-    return order.slice(0, state.dopeCount);
+    // 아래쪽 «바꿔 넣은 원자 수» 를 건드리면 기본 순서대로 다시 배치한다
+    if (sites.length !== state.dopeCount) sites = ORDER.slice(0, state.dopeCount);
+    return sites;
   }
 
   function update() {
@@ -313,6 +701,8 @@ const SemiScene = (() => {
       c._mat.emissiveColor = B().Color3.FromHexString(
         state.doping === 'p' ? '#e8a14a' : '#5ad0f0');
     });
+
+    layoutHands();
   }
 
   /** 자유 운반자가 떠다니는 애니메이션 */
@@ -336,12 +726,12 @@ const SemiScene = (() => {
     if (!camera) return;
     camera.alpha = -Math.PI / 2;
     camera.beta = 0.72;
-    camera.radius = 18;
+    camera.radius = 22;
     camera.setTarget(new (B().Vector3)(0, 1.0, 0));
   }
 
   /* ══ 컨트롤 ═════════════════════════════════ */
-  const guide = '규소 원자를 <b>원자가 전자 3 개(붕소)</b> 나 <b>5 개(인)</b> 로 바꿔 보세요. 짝을 못 이룬 전자와 빈자리가 어떤 역할을 할까요?';
+  const guide = '왼쪽 <b>원자 상자</b>의 인(P)·붕소(B) 모형을 끌어다 규소 자리에 붙여 보세요. 짝을 못 이룬 전자와 빈자리가 어떤 역할을 할까요?';
   const prepGuide = '점선으로 표시된 자리에 칠판·규소 원자·불순물 원자를 끌어다 놓으세요.';
 
   function controlsHTML() {
@@ -352,17 +742,29 @@ const SemiScene = (() => {
         { v: 'p', t: 'p형 (붕소 3개)' },
       ], state.doping, 2)}
       ${LabUI.opts('바꿔 넣은<br>원자 수', 'dopecount', [
-        { v: 1, t: '1 개' }, { v: 2, t: '2 개' }, { v: 4, t: '4 개' }, { v: 6, t: '6 개' },
+        { v: 1, t: '1 개' }, { v: 2, t: '2 개' }, { v: 3, t: '3 개' },
+        { v: 4, t: '4 개' }, { v: 5, t: '5 개' }, { v: 6, t: '6 개' },
       ], state.dopeCount, 2)}
       ${LabUI.slider('temp', '온도<br><i>T</i>',
         { min: 100, max: 800, step: 10, value: state.temp, fmt: (v) => `${v} K` })}
       <div class="control">
         <div class="clabel">전압<br>걸기</div>
         <button class="power${state.field ? '' : ' off'}" id="fieldBtn">${state.field ? 'ON' : 'OFF'}</button>
+      </div>
+      <div class="control">
+        <div class="clabel">직접<br>조작</div>
+        <div class="cbody"><p class="hands-on">
+          왼쪽 <b>원자 상자</b>의 인(P)·붕소(B) 모형을 집어 규소 자리에 <b>끌어다 붙입니다</b>
+          (톡 누르면 가운데 빈자리로 들어갑니다). 꽂아 둔 원자를 다시 집어 격자 밖으로 끌어내면
+          규소로 돌아갑니다. 오른쪽 <b>온도계 손잡이</b>를 위아래로 끌거나 <b>＋/－</b>로 온도를,
+          앞쪽 <b>스위치</b>를 눌러 전압을 바꿉니다.
+        </p></div>
       </div>`;
   }
 
   function bindControls(root, onChange) {
+    onChangeCb = onChange;      // 3D 에서 조작해도 측정값이 갱신되도록
+    panelRoot = root;
     LabUI.bindOpts(root, 'doping', state, 'doping', onChange, String);
     LabUI.bindOpts(root, 'dopecount', state, 'dopeCount', onChange);
     LabUI.bindSlider(root, 'temp', state, 'temp', (v) => `${v} K`, onChange);

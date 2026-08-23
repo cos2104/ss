@@ -93,6 +93,8 @@ const DopplerScene = (() => {
     buildObserver();
     buildProps();
     buildPlaceholders();
+    buildSteppers();
+    setupPointer(canvas);
 
     // 교과서 그림 액자 (배경 소품)
     LabUI.addPoster(scene, '../assets/thumbs/doppler.jpg', { x: -16, y: 0, z: 11, ry: 0.35 });
@@ -328,12 +330,205 @@ const DopplerScene = (() => {
   }
   function slotName(id) { return slots[id].name; }
 
+  /* ══ 화면에서 직접 조작 ═══════════════════════
+     · 이야기  — 구급차를 도로 위에서 끌어 옮기고, 지붕의 경광등을 눌러 사이렌을 켠다.
+                 차 위 ＋ / － 로 구급차 속력을 바꾼다.
+     · 탐구    — 음원(구급차)이나 관찰자를 끌면 그쪽이 «움직이는 쪽» 이 되고,
+                 끄는 방향이 «가까워질 때 / 멀어질 때» 를 정한다.
+     · 스피드건 — 총 위 ＋ / － 로 추정 속력을 맞추고, 총을 누르면 방아쇠를 당겨 판정한다. */
+  let stepVs = null, stepLabV = null, stepGuess = null;
+  let drag = null;                 // { what: 'amb' | 'obs', x0, from }
+  let onChangeCb = null;
+
+  const AMB_RE = /^(doAmbB|doAmbS|doAmbC|doAmbW|doAmbX|doW\d)/;   // 경광등(doAmbL)은 제외
+  const OBS_RE = /^doObs/;
+  const GUN_RE = /^doPropG/;
+
+  function buildSteppers() {
+    stepVs = LabUI.makeStepper(scene, 'Vs', { size: 1.8 });
+    stepLabV = LabUI.makeStepper(scene, 'LabV', { size: 1.8 });
+    stepGuess = LabUI.makeStepper(scene, 'Guess', { size: 1.8 });
+  }
+
+  /** ＋ / － 단추를 부품 위쪽에 충분히 띄워 둔다 — 화면을 다시 그릴 때마다 부른다 */
+  function layoutSteppers() {
+    if (!stepVs || !sim) return;
+    const on = allPlaced();
+    const ax = ambulance.position.x;
+    stepVs.place(ax, 5.0, -0.2, 1.5);
+    stepVs.setEnabled(on && state.mode === 'story');
+    // 실험 모드 — 움직이는 쪽(음원 또는 관찰자) 위에 붙는다
+    if (state.labWho === 'observer') stepLabV.place(observer.position.x, 5.0, OBS_D * M, 1.5);
+    else stepLabV.place(ax, 5.0, -0.2, 1.5);
+    stepLabV.setEnabled(on && state.mode === 'lab');
+    stepGuess.place(12, 4.0, OBS_D * M - 1, 1.5);
+    stepGuess.setEnabled(on && state.mode === 'gun');
+  }
+
+  /** 3D 에서 바꾼 값을 아래쪽 조작 막대에도 그대로 비춘다 */
+  function syncPanel() {
+    const put = (id, val, txt) => {
+      const el = document.querySelector('#' + id);
+      const out = document.querySelector('#' + id + 'Out');
+      if (el) el.value = val;
+      if (out) out.textContent = txt;
+    };
+    const mark = (key, val) => {
+      document.querySelectorAll('[data-' + key + ']').forEach((b) => {
+        b.classList.toggle('on', b.getAttribute('data-' + key) === String(val));
+      });
+    };
+    if (state.mode === 'story') {
+      put('vs', state.vs, `${state.vs} m/s`);
+      mark('sound', state.sound ? 1 : 0);
+    } else if (state.mode === 'lab') {
+      put('labV', state.labV, `${state.labV} m/s`);
+      mark('labWho', state.labWho);
+      mark('labDir', state.labDir);
+    } else {
+      put('guess', state.guess, `${(+state.guess).toFixed(1)} m/s`);
+    }
+  }
+
+  /** 진행 단추의 글자를 지금 상태에 맞춘다 */
+  function syncRunBtn() {
+    const btn = document.querySelector('#runBtn');
+    if (!btn) return;
+    const labels = { story: '▶ 출발', lab: '▶ 측정', gun: '▶ 접근 시작' };
+    btn.textContent = state.running ? '진행 중' : labels[state.mode];
+    btn.classList.toggle('run', state.running);
+  }
+
+  /** 3D 조작 뒤 — 조작 막대와 측정값을 함께 갱신한다 */
+  function afterHands() {
+    syncPanel();
+    if (onChangeCb) onChangeCb();
+  }
+
+  /* ── 값 단추 (슬라이더와 같은 최소·최대·간격) ── */
+  function bumpVs(d) {
+    state.vs = Math.max(10, Math.min(34, state.vs + d));
+    // 슬라이더와 똑같이 파면·기록을 새로 시작하되,
+    // 손으로 세워 둔 자리는 지킨다 (＋ · － 단추가 차를 따라다니므로 자리가 튀면 다시 누를 수 없다)
+    const keepX = sim ? sim.srcX : null, keepO = sim ? sim.obsX : 0;
+    reset();
+    if (keepX !== null) { sim.srcX = keepX; sim.obsX = keepO; layout(); }
+    syncRunBtn();
+    afterHands();
+  }
+  function bumpLabV(d) {
+    state.labV = Math.max(2, Math.min(20, state.labV + d));
+    layout();
+    afterHands();
+  }
+  function bumpGuess(d) {
+    state.guess = Math.max(15, Math.min(45, +((+state.guess) + d * 0.5).toFixed(1)));
+    layout();
+    afterHands();
+  }
+
+  /**
+   * 끄는 동안 «가까워질 때 / 멀어질 때» 를 정한다 — 끈 방향이 아니라
+   * 두 사람 «사이의 거리»가 주는지 느는지로 판단하므로, 음원과 관찰자가 서로 지나쳐
+   * 왼쪽·오른쪽이 뒤바뀐 뒤에도 맞는 쪽을 가리킨다.
+   *   now   — 지금 끄는 쪽의 자리, other — 상대의 자리 (둘 다 월드 단위)
+   */
+  function markDir(now, other) {
+    if (!drag || Math.abs(now - drag.prev) < 0.3) return;   // 손떨림에는 반응하지 않는다
+    state.labDir = Math.abs(now - other) < Math.abs(drag.prev - other) ? 'closer' : 'away';
+    drag.prev = now;
+  }
+
+  /** 화면 위 한 점을 높이 y 인 수평면 위의 세계 좌표로 바꾼다 */
+  function pointerOn(y) {
+    const ray = scene.createPickingRay(scene.pointerX, scene.pointerY, null, camera);
+    const plane = B().Plane.FromPositionAndNormal(
+      new (B().Vector3)(0, y, 0), new (B().Vector3)(0, 1, 0));
+    const d = ray.intersectsPlane(plane);
+    if (d === null) return null;
+    return ray.origin.add(ray.direction.scale(d));
+  }
+
+  function setupPointer(canvas) {
+    scene.onPointerObservable.add((pi) => {
+      const T = B().PointerEventTypes;
+      const m = pi.pickInfo && pi.pickInfo.pickedMesh;
+      const nm = m ? m.name : '';
+
+      if (pi.type === T.POINTERDOWN) {
+        if (!sim || !allPlaced()) return;         // 배치가 끝나기 전에는 조작하지 않는다
+        if (nm === 'btnAddVs') { bumpVs(+1); return; }
+        if (nm === 'btnSubVs') { bumpVs(-1); return; }
+        if (nm === 'btnAddLabV') { bumpLabV(+1); return; }
+        if (nm === 'btnSubLabV') { bumpLabV(-1); return; }
+        if (nm === 'btnAddGuess') { bumpGuess(+1); return; }
+        if (nm === 'btnSubGuess') { bumpGuess(-1); return; }
+
+        if (state.mode === 'gun') {
+          // 스피드건을 누르면 방아쇠를 당긴 셈 — 그 자리에서 판정한다
+          if (GUN_RE.test(nm)) { sim.revealed = true; afterHands(); }
+          return;
+        }
+        if (state.mode === 'story' && nm === 'doAmbL') {
+          // 지붕의 경광등이 사이렌 스위치
+          state.sound = !state.sound;
+          if (state.sound) ensureAudio(); else setAudio(F0, false);
+          afterHands();
+          return;
+        }
+        if (AMB_RE.test(nm)) {
+          const p = pointerOn(0.85);
+          if (!p) return;
+          drag = { what: 'amb', x0: p.x, from: ambulance.position.x, prev: ambulance.position.x };
+          if (state.mode === 'lab') state.labWho = 'source';
+          if (state.mode === 'story') {
+            state.running = false;               // 손으로 잡으면 멈춘다
+            setAudio(F0, false);
+            sim.fHist = [];
+            clearRings();                        // 옛 자리에 남은 파면도 함께 지운다
+            syncRunBtn();
+          }
+          camera.detachControl();
+        } else if (state.mode === 'lab' && OBS_RE.test(nm)) {
+          const p = pointerOn(1.0);
+          if (!p) return;
+          drag = { what: 'obs', x0: p.x, from: observer.position.x, prev: observer.position.x };
+          state.labWho = 'observer';
+          state.running = false;
+          syncRunBtn();
+          camera.detachControl();
+        }
+      } else if (pi.type === T.POINTERMOVE && drag) {
+        const p = pointerOn(drag.what === 'amb' ? 0.85 : 1.0);
+        if (!p) return;
+        const d = p.x - drag.x0;                 // 끌린 거리 (월드 단위)
+        if (drag.what === 'amb') {
+          const lim = ROAD_L / 2 - 3;
+          sim.srcX = Math.max(-lim, Math.min(lim, (drag.from + d) / M));
+          // 음원을 관찰자에게 가까워지는 쪽으로 끌면 «가까워질 때»
+          if (state.mode === 'lab') markDir(sim.srcX * M, sim.obsX);
+        } else {
+          sim.obsX = Math.max(-16, Math.min(16, drag.from + d));
+          // 관찰자를 음원에게 가까워지는 쪽으로 끌면 «가까워질 때»
+          markDir(sim.obsX, sim.srcX * M);
+        }
+        layout();
+        afterHands();
+      } else if (pi.type === T.POINTERUP && drag) {
+        drag = null;
+        camera.attachControl(canvas, true);
+        afterHands();
+      }
+    });
+  }
+
   /* ══ 진행 ═══════════════════════════════════ */
   function reset() {
     state.running = false;
     sim = {
       t: 0,
       srcX: -ROAD_L / 2 + 4,     // 구급차 위치 (m)
+      obsX: 0,                   // 관찰자 자리 (실험 모드에서 끌어 옮긴다, 월드 단위)
       lastRing: 0,
       fHist: [],                 // 관측 진동수 기록
       // 스피드건
@@ -355,12 +550,16 @@ const DopplerScene = (() => {
     observer.setEnabled(!!placed.obsT);
     if (props.micT) props.micT.setEnabled(!!placed.micT);
     if (props.gunT) props.gunT.setEnabled(!!placed.gunT);
+    // 관찰자는 실험 모드에서만 끌어 옮긴 자리에 선다 (다른 모드의 식은 x = 0 을 기준으로 한다)
+    observer.position.x = (state.mode === 'lab') ? sim.obsX : 0;
     if (!all) {
       if (placed.ambT) ambulance.position.x = (-ROAD_L / 2 + 4) * M;
+      layoutSteppers();
       return;
     }
 
     ambulance.position.x = sim.srcX * M;
+    layoutSteppers();
     // 파면 반지름 갱신은 tick 에서
   }
 
@@ -455,6 +654,13 @@ const DopplerScene = (() => {
           { v: 0, t: '끄기' }, { v: 1, t: '켜기 🔊' },
         ], state.sound ? 1 : 0, 1)}
         <div class="control">
+          <div class="clabel">직접<br>조작</div>
+          <div class="cbody"><p class="hands-on">
+            <b>구급차를 도로 위에서 끌어</b> 관찰자 앞·뒤 어디에나 세워 보세요.
+            차 위 <b>＋ · －</b> 로 속력을, 지붕의 <b>경광등을 누르면</b> 사이렌을 켜고 끕니다.
+          </p></div>
+        </div>
+        <div class="control">
           <div class="clabel">이야기</div>
           <button class="power" id="runBtn">▶ 출발</button>
         </div>
@@ -474,6 +680,14 @@ const DopplerScene = (() => {
         ], state.labDir, 1)}
         ${LabUI.slider('labV', '속력', { min: 2, max: 20, step: 1, value: state.labV, fmt: (v) => `${v} m/s` })}
         <div class="control">
+          <div class="clabel">직접<br>조작</div>
+          <div class="cbody"><p class="hands-on">
+            <b>음원(구급차)을 끌면 (가)</b>, <b>관찰자를 끌면 (나)</b> 실험이 됩니다.
+            둘이 <b>가까워지는 쪽으로 끌면</b> «가까워질 때», 반대로 끌면 «멀어질 때» 입니다.
+            움직이는 쪽 위의 <b>＋ · －</b> 로 속력을 정합니다.
+          </p></div>
+        </div>
+        <div class="control">
           <div class="clabel">실험</div>
           <button class="power" id="runBtn">▶ 측정</button>
         </div>
@@ -485,6 +699,13 @@ const DopplerScene = (() => {
     return `
       ${modeBtns}
       ${LabUI.slider('guess', '추정 속력', { min: 15, max: 45, step: 0.5, value: state.guess, fmt: (v) => `${(+v).toFixed(1)} m/s` })}
+      <div class="control">
+        <div class="clabel">직접<br>조작</div>
+        <div class="cbody"><p class="hands-on">
+          스피드건 위 <b>＋ · －</b> 로 추정 속력을 0.5 m/s 씩 맞춘 뒤,
+          <b>스피드건을 누르면</b> 방아쇠를 당겨 그 자리에서 판정합니다.
+        </p></div>
+      </div>
       <div class="control">
         <div class="clabel">자동차</div>
         <button class="power" id="runBtn">▶ 접근 시작</button>
@@ -500,6 +721,7 @@ const DopplerScene = (() => {
   }
 
   function bindControls(root, onChange) {
+    onChangeCb = onChange;      // 3D 에서 조작해도 측정값이 갱신되도록
     root.querySelectorAll('[data-mode]').forEach((b) => b.addEventListener('click', () => {
       state.mode = b.dataset.mode;
       reset();

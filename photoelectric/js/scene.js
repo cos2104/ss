@@ -17,6 +17,7 @@ const PhotoScene = (() => {
   let lamp, plate, beam, beamMat, meterG, meterTex;
   let electrons = [];
   let placed = {};
+  let stepLam = null, lampSwitch = null, swTex = null, lamTag = null, metalTag = null;
 
   const state = {
     metal: 'cesium',
@@ -94,11 +95,15 @@ const PhotoScene = (() => {
     buildMeter();
     buildElectrons();
     buildPlaceholders();
+    buildHandsOn();
 
     glow.addExcludedMesh(scene.getMeshByName('phMeterFace'));
+    glow.addExcludedMesh(lamTag.plane);
+    glow.addExcludedMesh(metalTag.plane);
     // 교과서 그림 액자 (배경 소품)
-    LabUI.addPoster(scene, '../assets/thumbs/photoelectric.jpg', { x: -11.5, y: 0, z: 2.5, ry: 0.5 });
+    LabUI.addPoster(scene, '../assets/thumbs/photoelectric.jpg', { x: -13.5, y: 0, z: 4.5 });
 
+    setupPointer(canvas);
     resetTools();
     return scene;
   }
@@ -158,6 +163,7 @@ const PhotoScene = (() => {
     tm.backFaceCulling = false;
     tube.material = tm;
     tube.parent = plate;
+    tube.isPickable = false;          // 유리관 너머의 «금속판»을 바로 누를 수 있도록
 
     // 금속판 (음극)
     const cath = B().MeshBuilder.CreateBox('phCathode', { width: 0.28, height: 3.0, depth: 2.6 }, scene);
@@ -187,6 +193,7 @@ const PhotoScene = (() => {
     beam.rotation.z = Math.PI / 2;
     beam.position.set(-2.9, 2.4, 0);
     beam.material = beamMat;
+    beam.isPickable = false;          // 빛줄기가 광원·금속판을 가리지 않도록
   }
 
   /** 튀어나오는 광전자 */
@@ -280,6 +287,239 @@ const PhotoScene = (() => {
     meterTex.update();
   }
 
+  /* ══ 화면에서 직접 조작 ═══════════════════════
+     · 광원의 «전원 단추»를 눌러 빛을 켜고 끈다
+     · 광원을 앞뒤로 끌면 금속판까지의 거리가 달라져 빛의 세기가 바뀐다
+     · 광원 위 ＋ / － 로 단색광의 파장을 바꾼다
+     · 금속판을 누르면 다른 금속으로 갈아 끼운다                      */
+  const NOSE = -5.75;                 // 광원 렌즈 앞 끝 (기본 자리)
+  const DX_MIN = -2.6, DX_MAX = 2.4;  // 광원을 앞뒤로 옮길 수 있는 범위
+  const LAM_STEP = 20;                // ＋ / － 한 번에 바꾸는 파장 (nm)
+  const METAL_ORDER = ['cesium', 'sodium', 'zinc', 'copper'];
+
+  let lampDrag = null;                // { px0, dx0 }
+  let tap = null;                     // { name, x, y } — 끌지 않고 «눌렀을 때»만 반응한다
+  let onChangeCb = null;
+  const shown = { lam: '', metal: '', on: null };   // 이름표는 값이 바뀔 때만 다시 그린다
+
+  /** 빛의 세기 → 광원의 앞뒤 위치 (가까울수록 세다) */
+  function lampDx() {
+    const t = Math.min(1, Math.max(0, (state.intensity - 0.1) / 0.9));
+    return DX_MIN + t * (DX_MAX - DX_MIN);
+  }
+  /** 광원의 앞뒤 위치 → 빛의 세기 (슬라이더와 같은 0.1~1.0, 0.05 단위) */
+  function intensityFromDx(dx) {
+    const d = Math.min(DX_MAX, Math.max(DX_MIN, dx));
+    const t = (d - DX_MIN) / (DX_MAX - DX_MIN);
+    const v = Math.round((0.1 + t * 0.9) / 0.05) * 0.05;
+    return +Math.min(1, Math.max(0.1, v)).toFixed(2);
+  }
+
+  /** 부품 옆에 세워 두는 작은 이름표 — 지금 값을 3D 화면에서 바로 읽는다 */
+  function makeTag(name, w, h) {
+    const p = B().MeshBuilder.CreatePlane(name, { width: w, height: h }, scene);
+    p.rotation.y = Math.PI;           // 전류계 눈금판과 같은 방식 (글씨는 뒤집어 그린다)
+    p.isPickable = false;
+    const tex = new (B().DynamicTexture)(name + 'T', { width: 384, height: 96 }, scene, true);
+    tex.hasAlpha = true;
+    const m = new (B().StandardMaterial)(name + 'M', scene);
+    m.diffuseTexture = tex; m.emissiveTexture = tex; m.opacityTexture = tex;
+    m.emissiveColor = new (B().Color3)(0.95, 0.95, 0.95);
+    m.specularColor = new (B().Color3)(0, 0, 0);
+    m.backFaceCulling = false;
+    p.material = m;
+    return { plane: p, tex };
+  }
+
+  function drawTag(tag, main, hint) {
+    const c = tag.tex.getContext();
+    c.clearRect(0, 0, 384, 96);
+    c.translate(384, 0); c.scale(-1, 1);      // 뒤집어 세웠으므로 글씨도 뒤집어 그린다
+    c.fillStyle = 'rgba(16,22,30,.84)';
+    c.fillRect(2, 2, 380, 92);
+    c.strokeStyle = '#3c4756'; c.lineWidth = 3;
+    c.strokeRect(2, 2, 380, 92);
+    c.textAlign = 'center';
+    c.fillStyle = '#e6ebf2';
+    c.font = 'bold 34px "Noto Sans KR", sans-serif';
+    c.textBaseline = 'middle';
+    c.fillText(main, 192, 34);
+    c.fillStyle = '#7f8fa3';
+    c.font = '21px "Noto Sans KR", sans-serif';
+    c.fillText(hint, 192, 72);
+    c.setTransform(1, 0, 0, 1, 0, 0);
+    tag.tex.update();
+  }
+
+  /** 광원 앞면의 전원 단추 */
+  function buildSwitch() {
+    const sw = B().MeshBuilder.CreatePlane('phLampSwitch', { width: 0.66, height: 0.66 }, scene);
+    sw.position.set(-7.0, 1.85, -1.03);
+    swTex = new (B().DynamicTexture)('phSwTex', { width: 96, height: 96 }, scene, true);
+    swTex.hasAlpha = true;
+    const m = new (B().StandardMaterial)('phSwMat', scene);
+    m.diffuseTexture = swTex; m.emissiveTexture = swTex; m.opacityTexture = swTex;
+    m.emissiveColor = new (B().Color3)(1, 1, 1);
+    m.specularColor = new (B().Color3)(0, 0, 0);
+    m.backFaceCulling = false;
+    sw.material = m;
+    sw.parent = lamp;                 // 광원을 옮기면 단추도 따라간다
+    lampSwitch = sw;
+  }
+
+  function drawSwitch() {
+    const c = swTex.getContext();
+    c.clearRect(0, 0, 96, 96);
+    c.fillStyle = state.on ? '#2ecc71' : '#4a5460';
+    c.beginPath(); c.arc(48, 48, 40, 0, 7); c.fill();
+    c.strokeStyle = state.on ? '#0f3b22' : '#242b34'; c.lineWidth = 5;
+    c.beginPath(); c.arc(48, 48, 40, 0, 7); c.stroke();
+    // 전원 기호 — 위가 트인 원과 세로줄 (좌우 대칭이라 뒤집혀도 같다)
+    c.strokeStyle = '#ffffff'; c.lineWidth = 7; c.lineCap = 'round';
+    c.beginPath(); c.arc(48, 53, 20, -Math.PI / 2 + 0.62, Math.PI * 1.5 - 0.62); c.stroke();
+    c.beginPath(); c.moveTo(48, 27); c.lineTo(48, 51); c.stroke();
+    swTex.update();
+  }
+
+  function buildHandsOn() {
+    shown.lam = ''; shown.metal = ''; shown.on = null;
+    stepLam = LabUI.makeStepper(scene, 'Lam');
+    buildSwitch();
+    lamTag = makeTag('phLamTag', 2.9, 0.72);
+    metalTag = makeTag('phMetalTag', 3.4, 0.85);
+  }
+
+  /** 직접 조작하는 부품들의 자리·표시를 매번 다시 맞춘다 */
+  function layoutHandsOn() {
+    if (!stepLam) return;
+    const on = allPlaced();
+    const dx = lampDx();
+    const lx = -7.6 + dx;
+
+    stepLam.place(lx, 4.7, -1.1, 0.9);
+    stepLam.setEnabled(on);
+    lampSwitch.setEnabled(on);        // 배치가 끝나야 전원 단추가 나타난다
+    lamTag.plane.position.set(lx, 5.6, -1.1);
+    lamTag.plane.setEnabled(on);
+    metalTag.plane.position.set(1.5, 5.2, -1.1);
+    metalTag.plane.setEnabled(on);
+
+    const lam = `λ ${state.lambda} nm`;
+    if (lam !== shown.lam) { shown.lam = lam; drawTag(lamTag, lam, '＋ － 로 파장을 바꾼다'); }
+    if (state.metal !== shown.metal) {
+      shown.metal = state.metal;
+      const m = METALS[state.metal];
+      drawTag(metalTag, `${m.name} · W ${m.W.toFixed(2)} eV`, '금속판을 누르면 바뀐다');
+    }
+    if (state.on !== shown.on) { shown.on = state.on; drawSwitch(); }
+  }
+
+  /* ── 3D 조작 ────────────────────────────────── */
+  function afterHandsOn() {
+    update();
+    syncPanel();
+    if (onChangeCb) onChangeCb();
+  }
+
+  function togglePower() {
+    state.on = !state.on;
+    afterHandsOn();
+  }
+
+  function bumpLambda(d) {
+    const v = Math.max(200, Math.min(700, state.lambda + d * LAM_STEP));
+    if (v === state.lambda) return;
+    state.lambda = v;
+    afterHandsOn();
+  }
+
+  /** 금속판을 눌러 다음 금속으로 갈아 끼운다 */
+  function nextMetal() {
+    const i = METAL_ORDER.indexOf(state.metal);
+    state.metal = METAL_ORDER[(i + 1) % METAL_ORDER.length];
+    afterHandsOn();
+  }
+
+  /** 화면의 한 점 → 장치가 놓인 세로 평면 위의 x 좌표 */
+  function pointerX() {
+    const ray = scene.createPickingRay(scene.pointerX, scene.pointerY, null, camera);
+    const plane = B().Plane.FromPositionAndNormal(
+      new (B().Vector3)(0, 2.4, 0), new (B().Vector3)(0, 0, 1));
+    const d = ray.intersectsPlane(plane);
+    if (d === null) return null;
+    return ray.origin.add(ray.direction.scale(d)).x;
+  }
+
+  /** 하단 조작 막대의 값도 3D 조작에 맞춰 따라오게 한다 */
+  function syncPanel() {
+    const q = (s) => document.querySelector(s);
+    const la = q('#lambda'), lo = q('#lambdaOut');
+    if (la) la.value = state.lambda;
+    if (lo) lo.textContent = `${state.lambda} nm`;
+    const it = q('#intensity'), io = q('#intensityOut');
+    if (it) it.value = state.intensity;
+    if (io) io.textContent = `${(state.intensity * 100).toFixed(0)} %`;
+    const btn = q('#onBtn');
+    if (btn) {
+      btn.textContent = state.on ? 'ON' : 'OFF';
+      btn.classList.toggle('off', !state.on);
+    }
+    document.querySelectorAll('[data-metal]').forEach((b) =>
+      b.classList.toggle('on', b.getAttribute('data-metal') === state.metal));
+  }
+
+  const TAPPABLE = ['btnAddLam', 'btnSubLam', 'phLampSwitch', 'phCathode'];
+
+  function setupPointer(canvas) {
+    scene.onPointerObservable.add((pi) => {
+      const T = B().PointerEventTypes;
+      const nm = pi.pickInfo && pi.pickInfo.pickedMesh ? pi.pickInfo.pickedMesh.name : '';
+
+      if (pi.type === T.POINTERDOWN) {
+        if (!allPlaced()) return;                 // 배치가 끝나기 전에는 조작하지 않는다
+        if (TAPPABLE.indexOf(nm) >= 0) {
+          const ev = pi.event || {};
+          tap = { name: nm, x: ev.clientX || 0, y: ev.clientY || 0 };
+          return;
+        }
+        if (/^phLamp(Body|Nose|Stand)$/.test(nm)) {
+          const px = pointerX();
+          if (px === null) return;
+          lampDrag = { px0: px, dx0: lampDx() };
+          camera.detachControl();
+        }
+      } else if (pi.type === T.POINTERMOVE && lampDrag) {
+        const px = pointerX();
+        if (px === null) return;
+        const v = intensityFromDx(lampDrag.dx0 + (px - lampDrag.px0));
+        if (v !== state.intensity) {
+          state.intensity = v;
+          update();
+          syncPanel();
+          if (onChangeCb) onChangeCb();
+        }
+      } else if (pi.type === T.POINTERUP) {
+        if (lampDrag) {
+          lampDrag = null;
+          camera.attachControl(canvas, true);
+        }
+        if (tap) {
+          // 시점을 돌리려고 끈 것과 구분한다 — 거의 움직이지 않았을 때만 «누름»
+          const ev = pi.event || {};
+          const moved = Math.hypot((ev.clientX || 0) - tap.x, (ev.clientY || 0) - tap.y);
+          const hit = tap.name;
+          tap = null;
+          if (moved < 8) {                        // 손가락으로 눌러도 흔들림을 견딘다
+            if (hit === 'btnAddLam') bumpLambda(+1);
+            else if (hit === 'btnSubLam') bumpLambda(-1);
+            else if (hit === 'phLampSwitch') togglePower();
+            else if (hit === 'phCathode') nextMetal();
+          }
+        }
+      }
+    });
+  }
+
   /* ── 배치 자리 ──────────────────────────────── */
   const holders = {};
   function buildPlaceholders() {
@@ -331,6 +571,13 @@ const PhotoScene = (() => {
     const m = METALS[state.metal];
     plate._cath.material.diffuseColor = B().Color3.FromHexString(m.color);
 
+    // 빛의 세기 = 광원이 금속판에 얼마나 가까이 있는가 (끌어서 옮긴 만큼 자리를 잡는다)
+    const dx = lampDx();
+    lamp.position.x = dx;
+    const nose = NOSE + dx;
+    beam.scaling.y = -nose / 5.8;        // 렌즈 앞 끝에서 금속판(x = 0)까지
+    beam.position.x = nose / 2;
+
     // 빛의 색 (파장에 따라)
     const rgb = wavelengthRGB(state.lambda);
     beamMat.emissiveColor = new (B().Color3)(rgb.r, rgb.g, rgb.b);
@@ -345,6 +592,7 @@ const PhotoScene = (() => {
     electrons.forEach((e, i) => e.setEnabled(placed.plate && i < n));
 
     Object.entries(holders).forEach(([id, h]) => h.setEnabled(!placed[id]));
+    layoutHandsOn();
     if (placed.meter) drawMeter();
   }
 
@@ -384,7 +632,8 @@ const PhotoScene = (() => {
   }
 
   /* ══ 컨트롤 ═════════════════════════════════ */
-  const guide = '빛의 <b>파장</b>과 <b>세기</b>를 따로 바꿔 보세요. 세게 비추기만 하면 전자가 나올까요?';
+  const guide = '광원의 <b>전원 단추</b>를 눌러 켠 뒤, 광원을 <b>앞뒤로 끌어</b> 세기를, '
+    + '광원 위 <b>＋ · －</b> 로 파장을 바꿔 보세요. 세게 비추기만 하면 전자가 나올까요?';
   const prepGuide = '점선으로 표시된 자리에 광원·금속판·전류계를 끌어다 놓으세요.';
 
   function controlsHTML() {
@@ -400,6 +649,13 @@ const PhotoScene = (() => {
       ${LabUI.slider('intensity', '빛의<br>세기',
         { min: 0.1, max: 1.0, step: 0.05, value: state.intensity, fmt: (v) => `${(v * 100).toFixed(0)} %` })}
       <div class="control">
+        <div class="clabel">직접<br>조작</div>
+        <div class="cbody"><p class="hands-on">
+          광원 앞의 <b>전원 단추</b>를 눌러 빛을 켜고, 광원을 <b>앞뒤로 끌어</b> 세기를 바꿉니다.
+          광원 위 <b>＋ · －</b> 로 파장을, <b>금속판을 누르면</b> 금속이 바뀝니다.
+        </p></div>
+      </div>
+      <div class="control">
         <div class="clabel">광원</div>
         <button class="power${state.on ? '' : ' off'}" id="onBtn">${state.on ? 'ON' : 'OFF'}</button>
       </div>
@@ -412,6 +668,7 @@ const PhotoScene = (() => {
   }
 
   function bindControls(root, onChange) {
+    onChangeCb = onChange;      // 3D 에서 조작해도 측정값이 갱신되도록
     LabUI.bindOpts(root, 'metal', state, 'metal', onChange, String);
     const setL = LabUI.bindSlider(root, 'lambda', state, 'lambda', (v) => `${v} nm`, onChange);
     LabUI.bindSlider(root, 'intensity', state, 'intensity', (v) => `${(v * 100).toFixed(0)} %`, onChange);

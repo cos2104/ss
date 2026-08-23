@@ -13,10 +13,11 @@ const SpringWaveScene = (() => {
   const N_BEAD = 64;             // 용수철 고리 수
   const WAVE_L = 8.0;            // 용수철 길이 (m)
   const WM = 2.2;                // 파동 모드 축척
+  const WAVE_A = 0.55;           // 파동 모드에서 고리가 흔들려 보이는 폭 (보이기용)
 
   let scene, camera;
   let standG, springMesh, bob, shadowBoard, shadowTex;
-  let waveG, beads = [], ribbon, ruler2;
+  let waveG, beads = [], ribbon, ruler2, waveHandle;
   let placed = {};
 
   const state = {
@@ -78,6 +79,8 @@ const SpringWaveScene = (() => {
     buildWave();
     buildProps();
     buildPlaceholders();
+    buildSteppers();
+    setupPointer(canvas);
 
     // 교과서 그림 액자 (배경 소품)
     LabUI.addPoster(scene, '../assets/thumbs/springwave.jpg', { x: -8, y: 0, z: 5, ry: 0.3 });
@@ -152,6 +155,12 @@ const SpringWaveScene = (() => {
       beads.push(s);
     }
     ribbon = beads[10];   // 빨간 리본 (매질의 한 점)
+
+    // 왼쪽 끝 손잡이 — 학생이 손으로 잡고 흔드는 곳 (끝 고리를 따라 움직인다)
+    // 높이 0.5 — 끝 고리가 가장 아래로 내려왔을 때도 실험대(윗면 y≈0)를 뚫지 않는다
+    waveHandle = B().MeshBuilder.CreateCylinder('swHandle', { height: 0.5, diameter: 0.3 }, scene);
+    waveHandle.material = mat('swHandleM', '#b5793a', '#ffddb0', 48);
+    waveHandle.parent = waveG;
 
     // 파장 재는 자
     ruler2 = B().MeshBuilder.CreateGround('swRuler', { width: WAVE_L * WM, height: 0.7 }, scene);
@@ -304,6 +313,7 @@ const SpringWaveScene = (() => {
       shadowBoard.setEnabled(!!placed.rulerT);
       waveG.setEnabled(false);
       if (props.watchT) props.watchT.setEnabled(!!placed.watchT);
+      layoutSteppers();
       return;
     }
     bob.setEnabled(shm);
@@ -318,7 +328,7 @@ const SpringWaveScene = (() => {
       const x = state.running ? state.amp * Math.sin(omega() * sim.t + Math.PI / 2) : state.amp;
       const eqLen = 2.2 + state.mass * 9.8 / state.k;   // 평형에서 용수철 길이 (m→unit 그대로)
       const len = eqLen + x * 4;                        // 변위를 4배로 보이게
-      const topY = 6.2;
+      const topY = TOP_Y;
       springMesh.scaling.y = len;
       springMesh.position.set(0.6, topY - len / 2, 0);
       bob.position.set(0.6, topY - len - 0.35, 0);
@@ -326,7 +336,7 @@ const SpringWaveScene = (() => {
     } else {
       // 용수철 파동: 왼손이 x=0 에서 흔든다. 파면은 v·t 까지 진행
       const front = WAVE_V * sim.waveT;
-      const A = 0.55;
+      const A = WAVE_A;
       for (let i = 0; i < N_BEAD; i++) {
         const xm = (i / (N_BEAD - 1)) * WAVE_L;         // 매질상 위치 (m)
         const base = (xm - WAVE_L / 2) * WM;
@@ -340,7 +350,186 @@ const SpringWaveScene = (() => {
         beads[i].position.set(base + dx * WM * 0.4, 0.3 + (state.waveKind === 'trans' ? dy : 0), 0);
         // 종파는 조밀·성김이 보이도록 크기 변화 없음 (위치만)
       }
+      // 손잡이를 잡고 끄는 동안 — 끝쪽 고리들이 손을 따라오게 한다 (멀어질수록 조금만)
+      if (handOff && !state.running) {
+        for (let i = 0; i < HAND_N; i++) {
+          const w = 1 - i / HAND_N;
+          beads[i].position.x += handOff.x * w;
+          beads[i].position.y += handOff.y * w;
+        }
+      }
+      if (waveHandle) {
+        waveHandle.position.copyFrom(beads[0].position);
+        waveHandle.position.x -= 0.32;      // 끝 고리 바깥쪽에 붙는다
+      }
     }
+    layoutSteppers();
+  }
+
+  /* ══ 화면에서 직접 조작 ═══════════════════════
+     · 진자 — 추(또는 용수철)를 «아래로 끌었다 놓으면» 당긴 만큼이 진폭이 되고 곧바로 진동한다
+     · 진자 — 추 아래 ＋ / － 로 추 질량을, 용수철 위 ＋ / － 로 용수철 상수를 바꾼다
+     · 파동 — 왼쪽 손잡이 고리를 «위아래»로 끌면 횡파, «용수철 방향»으로 끌면 종파가 되고
+              손을 놓으면 그 방향으로 계속 흔들어 파동을 보낸다
+     · 파동 — 손잡이 위 ＋ / － 로 메트로놈 진동수를 바꾼다                              */
+  const TOP_Y = 6.2;                       // 스탠드 팔 — 용수철을 매단 높이
+  const MASS_STEPS = [0.1, 0.2, 0.4];      // 아래 조작 막대의 선택지와 같은 값
+  const K_STEPS = [10, 20, 40];
+  const FREQ_STEPS = [1, 2, 3];
+  const HAND_N = 10;                       // 손을 따라오는 고리 수 (빨간 리본 앞까지)
+
+  let stepMass = null, stepK = null, stepFreq = null;
+  let pullBob = null;      // 추를 당기는 중 { y0, amp0 }
+  let shake = null;        // 손잡이를 흔드는 중 { x0, y0 }
+  let handOff = null;      // 손잡이가 제자리에서 벗어난 양 (보이기용)
+  let ctrlRoot = null;
+  let onChangeCb = null;
+
+  function buildSteppers() {
+    stepMass = LabUI.makeStepper(scene, 'Mass');
+    stepK = LabUI.makeStepper(scene, 'K');
+    stepFreq = LabUI.makeStepper(scene, 'Freq');
+  }
+
+  /** 단추 자리 — 부품과 겹치지 않게 띄워 둔다 (layout() 에서 매번 부른다) */
+  function layoutSteppers() {
+    if (!stepMass) return;
+    const on = allPlaced();
+    const shm = state.mode === 'shm';
+    // 스탠드 기둥(x ≈ -1.1)을 비껴가도록 오른쪽으로 치우쳐 놓는다
+    stepMass.place(1.5, 1.35, -1.4, 1.15);              // 추 아래
+    stepK.place(1.5, TOP_Y + 1.0, -1.0, 1.15);          // 용수철 위
+    stepFreq.place(-WAVE_L / 2 * WM + 1.2, 2.5, -0.6, 1.0);   // 손잡이 위
+    stepMass.setEnabled(on && shm);
+    stepK.setEnabled(on && shm);
+    stepFreq.setEnabled(on && !shm);
+  }
+
+  const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+
+  /** 선택지 목록을 한 칸 옮긴다 (범위는 아래 조작 막대와 똑같이 유지) */
+  function bumpList(list, key, d) {
+    const i = list.indexOf(state[key]);
+    const j = clamp((i < 0 ? 0 : i) + d, 0, list.length - 1);
+    if (list[j] === state[key]) return;
+    state[key] = list[j];
+    reset();
+    syncRunBtn();
+    syncControls();
+    if (onChangeCb) onChangeCb();
+  }
+
+  /** 화면 위 한 점을 z = 0 인 세로면 위의 세계 좌표로 바꾼다 */
+  function pointerOnFace() {
+    const ray = scene.createPickingRay(scene.pointerX, scene.pointerY, null, camera);
+    const plane = B().Plane.FromPositionAndNormal(
+      new (B().Vector3)(0, 0, 0), new (B().Vector3)(0, 0, 1));
+    const d = ray.intersectsPlane(plane);
+    if (d === null) return null;
+    return ray.origin.add(ray.direction.scale(d));
+  }
+
+  /** 3D 에서 조작해도 아래 조작 막대의 표시가 따라오게 한다 */
+  function syncRunBtn() {
+    const b = (ctrlRoot || document).querySelector('#runBtn');
+    if (!b) return;
+    b.textContent = state.running ? '진동 중' : (state.mode === 'shm' ? '▶ 놓기' : '▶ 흔들기');
+    b.classList.toggle('run', state.running);
+  }
+  function syncControls() {
+    const r = ctrlRoot || document;
+    const sl = r.querySelector('#amp');
+    if (sl) {
+      sl.value = state.amp;
+      const out = r.querySelector('#ampOut');
+      if (out) out.textContent = `${(state.amp * 100).toFixed(0)} cm`;
+    }
+    const mark = (key, val) => r.querySelectorAll(`[data-${key}]`).forEach(
+      (b) => b.classList.toggle('on', b.getAttribute('data-' + key) === String(val)));
+    mark('mass', state.mass);
+    mark('k', state.k);
+    mark('waveKind', state.waveKind);
+    mark('freq', state.freq);
+  }
+
+  function setupPointer(canvas) {
+    scene.onPointerObservable.add((pi) => {
+      const T = B().PointerEventTypes;
+      const nm = pi.pickInfo && pi.pickInfo.pickedMesh ? pi.pickInfo.pickedMesh.name : '';
+
+      if (pi.type === T.POINTERDOWN) {
+        if (!allPlaced()) return;              // 도구를 다 놓은 뒤에야 만질 수 있다
+        if (state.mode === 'shm') {
+          if (nm === 'btnAddMass') { bumpList(MASS_STEPS, 'mass', +1); return; }
+          if (nm === 'btnSubMass') { bumpList(MASS_STEPS, 'mass', -1); return; }
+          if (nm === 'btnAddK') { bumpList(K_STEPS, 'k', +1); return; }
+          if (nm === 'btnSubK') { bumpList(K_STEPS, 'k', -1); return; }
+          if (nm !== 'swBob' && nm !== 'swSpring') return;
+          const p = pointerOnFace();
+          if (!p) return;
+          reset();                             // 당기는 동안은 멈춰 둔다
+          pullBob = { y0: p.y, amp0: state.amp };
+          camera.detachControl();
+          syncRunBtn();
+          return;
+        }
+        if (nm === 'btnAddFreq') { bumpList(FREQ_STEPS, 'freq', +1); return; }
+        if (nm === 'btnSubFreq') { bumpList(FREQ_STEPS, 'freq', -1); return; }
+        const bd = /^swBd(\d+)$/.exec(nm);     // 손잡이 또는 왼쪽 끝 고리
+        if (nm !== 'swHandle' && (!bd || +bd[1] > 3)) return;
+        const p = pointerOnFace();
+        if (!p) return;
+        reset();
+        shake = { x0: p.x, y0: p.y };
+        handOff = { x: 0, y: 0 };
+        camera.detachControl();
+        syncRunBtn();
+        layout();
+        return;
+      }
+
+      if (pi.type === T.POINTERMOVE && pullBob) {
+        const p = pointerOnFace();
+        if (p === null) return;
+        // 아래로 끈 만큼 당긴 거리가 커진다.
+        // 화면에서는 4 cm ~ 20 cm 가 좁은 폭에 몰려 있으므로, 손을 천천히 따라오게 해
+        // 조금만 움직여도 값이 확 바뀌지 않게 한다 (10 으로 나눈다).
+        const raw = pullBob.amp0 + (pullBob.y0 - p.y) / 10;
+        state.amp = +clamp(Math.round(raw / 0.02) * 0.02, 0.04, 0.2).toFixed(2);
+        layout();
+        syncControls();
+        if (onChangeCb) onChangeCb();
+        return;
+      }
+
+      if (pi.type === T.POINTERMOVE && shake) {
+        const p = pointerOnFace();
+        if (p === null) return;
+        const dx = p.x - shake.x0, dy = p.y - shake.y0;
+        // 많이 끈 쪽이 흔드는 방향 — 위아래면 횡파, 용수철 방향이면 종파
+        state.waveKind = Math.abs(dy) >= Math.abs(dx) ? 'trans' : 'long';
+        // 끄는 폭은 «파동이 실제로 흔들릴 폭(WAVE_A)» 까지만 — 그래야 미리 보이는 모양이
+        // 놓은 뒤의 파동과 같고, 손잡이·끝 고리가 실험대 아래로 파고들지 않는다
+        handOff = state.waveKind === 'trans'
+          ? { x: 0, y: clamp(dy, -WAVE_A, WAVE_A) }
+          : { x: clamp(dx, -WAVE_A, WAVE_A), y: 0 };
+        layout();
+        syncControls();
+        if (onChangeCb) onChangeCb();
+        return;
+      }
+
+      if (pi.type === T.POINTERUP && (pullBob || shake)) {
+        pullBob = null; shake = null; handOff = null;
+        camera.attachControl(canvas, true);
+        reset();
+        state.running = true;                  // 손을 놓으면 곧바로 진동·파동이 시작된다
+        layout();
+        syncRunBtn();
+        syncControls();
+        if (onChangeCb) onChangeCb();
+      }
+    });
   }
 
   function tick(dt) {
@@ -387,6 +576,13 @@ const SpringWaveScene = (() => {
     if (state.mode === 'shm') {
       return `
         ${modeBtns}
+        <div class="control">
+          <div class="clabel">직접<br>조작</div>
+          <div class="cbody"><p class="hands-on">
+            <b>추를 아래로 끌었다 놓으면</b> 당긴 만큼이 진폭이 되고 곧바로 진동합니다.
+            추 아래 <b>＋ · －</b> 로 추 질량을, 용수철 위 <b>＋ · －</b> 로 용수철 상수를 바꿉니다.
+          </p></div>
+        </div>
         ${LabUI.slider('amp', '당긴 거리<br>(진폭)',
           { min: 0.04, max: 0.2, step: 0.02, value: state.amp, fmt: (v) => `${(v * 100).toFixed(0)} cm` })}
         ${LabUI.opts('추 질량 <i>m</i>', 'mass', [
@@ -406,6 +602,15 @@ const SpringWaveScene = (() => {
     }
     return `
       ${modeBtns}
+      <div class="control">
+        <div class="clabel">직접<br>조작</div>
+        <div class="cbody"><p class="hands-on">
+          왼쪽 <b>손잡이를 끌었다 놓습니다</b> — 화면에서 <b>위아래</b>로 끌면 <b>횡파</b>
+          (실제 실험대에서 «좌우»로 흔드는 것), <b>용수철이 뻗은 방향</b>으로 끌면 <b>종파</b>
+          («앞뒤»로 흔드는 것)가 됩니다.
+          손잡이 위 <b>＋ · －</b> 로 메트로놈 진동수를 바꿉니다.
+        </p></div>
+      </div>
       ${LabUI.opts('흔드는 방향', 'waveKind', [
         { v: 'trans', t: '좌우 — 횡파' }, { v: 'long', t: '앞뒤 — 종파' },
       ], state.waveKind, 1)}
@@ -423,6 +628,8 @@ const SpringWaveScene = (() => {
   }
 
   function bindControls(root, onChange) {
+    onChangeCb = onChange;      // 3D 에서 조작해도 측정값이 갱신되도록
+    ctrlRoot = root;
     root.querySelectorAll('[data-mode]').forEach((b) => b.addEventListener('click', () => {
       state.mode = b.dataset.mode;
       reset();

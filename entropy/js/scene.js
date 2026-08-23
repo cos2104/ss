@@ -12,10 +12,20 @@ const EntropyScene = (() => {
   const N_MARBLE = 20;
   const HOP_RATE = 0.55;       // 흔들 때 구슬이 초당 문을 지날 확률
   const BOX_W = 4.2, BOX_H = 3.0, BOX_D = 4.2, GAP = 1.1;
+  const BLK_W = 2.4;           // 금속 블록의 폭 — 중심 사이가 이 값이면 맞닿는다
+  const BLK_APART = 2.9;       // 처음에는 떨어뜨려 둔다 (손으로 끌어다 붙인다)
 
-  let scene, camera;
+  let scene, camera, canvasRef = null;
   let boxG, marbles = [], blockA, blockB, blockTexA, blockTexB, heatArrow;
   let placed = {};
+
+  /* 화면에서 직접 조작할 때 쓰는 값 */
+  let blkAx = -BLK_APART, blkBx = BLK_APART;   // 두 금속 블록의 중심 x
+  let shakeOff = 0;                            // 손으로 잡아 옮긴 상자의 좌우 어긋남
+  let grab = null;                             // 상자를 잡은 상태
+  let blkDrag = null;                          // 블록을 끄는 상태
+  let stepH = null, stepL = null;              // 3D 화면의 ＋ / － 단추
+  let onChangeCb = null;
 
   const state = {
     mode: 'marbles',    // 'marbles' | 'heat'
@@ -48,6 +58,7 @@ const EntropyScene = (() => {
 
   /* ══ 장면 ═══════════════════════════════════ */
   function create(engine, canvas) {
+    canvasRef = canvas;
     scene = new (B().Scene)(engine);
     scene.clearColor = B().Color4.FromHexString('#c9dff2ff');
 
@@ -76,6 +87,8 @@ const EntropyScene = (() => {
     buildHeat();
     buildProps();
     buildPlaceholders();
+    buildSteppers();
+    setupPointer(canvas);
 
     // 교과서 그림 액자 (배경 소품)
     LabUI.addPoster(scene, '../assets/thumbs/entropy.jpg', { x: -8, y: 0, z: 5.5, ry: 0.3 });
@@ -111,21 +124,21 @@ const EntropyScene = (() => {
     fl.position.set(0, T / 2, 0);
     fl.material = mat('enFloorMat', '#b8a988', '#e0d4b8', 48);
     fl.parent = boxG;
-    // 바깥 벽
+    // 바깥 벽 — 손으로 상자를 잡을 수 있도록 벽도 집힌다
     [[-W2 - T / 2, T, BOX_H, D], [W2 + T / 2, T, BOX_H, D]].forEach((c, i) => {
       const b = B().MeshBuilder.CreateBox('enSideW' + i, { width: c[1], height: c[2], depth: c[3] }, scene);
       b.position.set(c[0], BOX_H / 2, 0);
-      b.material = wallM; b.parent = boxG; b.isPickable = false;
+      b.material = wallM; b.parent = boxG;
     });
     [[0, -D / 2 - T / 2], [0, D / 2 + T / 2]].forEach((c, i) => {
       const b = B().MeshBuilder.CreateBox('enFrontW' + i, { width: W2 * 2 + T * 3, height: BOX_H, depth: T }, scene);
       b.position.set(c[0], BOX_H / 2, c[1]);
-      b.material = wallM; b.parent = boxG; b.isPickable = false;
+      b.material = wallM; b.parent = boxG;
     });
     // 가운데 벽 (아래에 틈)
     const mid = B().MeshBuilder.CreateBox('enMidW', { width: T, height: BOX_H - GAP, depth: D }, scene);
     mid.position.set(0, GAP + (BOX_H - GAP) / 2, 0);
-    mid.material = wallM; mid.parent = boxG; mid.isPickable = false;
+    mid.material = wallM; mid.parent = boxG;
     // 라벨
     const lbl = (x, txt) => {
       const p = B().MeshBuilder.CreatePlane('enLbl' + txt, { width: 1.2, height: 1.2 }, scene);
@@ -186,9 +199,10 @@ const EntropyScene = (() => {
   }
 
   function buildHeat() {
-    // 전도가 일어나려면 두 블록이 맞닿아 있어야 한다 (블록 폭 2.4 → 중심 ±1.2)
-    const [ga, ta, ba] = texBlock(-1.2, '#e8577a');
-    const [gb, tb, bb] = texBlock(1.2, '#5a9df0');
+    // 전도가 일어나려면 두 블록이 맞닿아야 한다 (블록 폭 2.4 → 중심 사이 2.4)
+    // 처음에는 떨어뜨려 두고, 학생이 화면에서 끌어다 맞댄다
+    const [ga, ta, ba] = texBlock(blkAx, '#e8577a');
+    const [gb, tb, bb] = texBlock(blkBx, '#5a9df0');
     blockA = ga; blockB = gb;
     blockTexA = ta; blockTexB = tb;
     blockA._body = ba; blockB._body = bb;
@@ -198,6 +212,8 @@ const EntropyScene = (() => {
     heatArrow.rotation.z = -Math.PI / 2;
     heatArrow.position.set(0.15, 2.35, 0);
     heatArrow.material = emat('enHArrM', '#ff8a3c');
+    // 화살표가 온도 딱지 앞을 가리므로 집히지 않게 — 블록을 끄는 손을 막지 않는다
+    heatArrow.isPickable = false;
   }
 
   const props = {};
@@ -307,6 +323,11 @@ const EntropyScene = (() => {
       mb.z = (Math.random() - 0.5) * (BOX_D - 0.9);
       mb.tx = mb.x; mb.tz = mb.z;
     });
+    // 화면에서 직접 조작하던 것도 처음 상태로 — 블록은 다시 떨어뜨려 둔다
+    // (잡고 있던 것을 놓아 주는 것이므로 잠가 두었던 카메라도 함께 되돌린다)
+    if ((grab || blkDrag) && camera && canvasRef) camera.attachControl(canvasRef, true);
+    blkAx = -BLK_APART; blkBx = BLK_APART;
+    shakeOff = 0; grab = null; blkDrag = null;
     layout();
   }
 
@@ -320,18 +341,21 @@ const EntropyScene = (() => {
     // 준비 단계 — 놓은 도구부터 하나씩 나타난다 (실험대는 항상 보임)
     if (!all) {
       boxG.setEnabled(!!placed.boxT);
+      boxG.position.x = 0;
       marbles.forEach((mb) => {
         mb.m.setEnabled(!!placed.marbleT);
         mb.m.position.set(mb.x, mb.y, mb.z);
       });
       blockA.setEnabled(!!placed.blockT);
       blockB.setEnabled(!!placed.blockT);
+      blockA.position.x = blkAx; blockB.position.x = blkBx;
       if (placed.blockT) {
         drawBlockLabel(blockTexA, 360, '블록 A (고온)');
         drawBlockLabel(blockTexB, 280, '블록 B (저온)');
       }
       heatArrow.setEnabled(false);
       if (props.thermoT) props.thermoT.setEnabled(!!placed.thermoT);
+      layoutSteppers();
       return;
     }
     if (props.thermoT) props.thermoT.setEnabled(!mar);
@@ -340,13 +364,20 @@ const EntropyScene = (() => {
     marbles.forEach((mb) => mb.m.setEnabled(mar));
     blockA.setEnabled(!mar);
     blockB.setEnabled(!mar);
-    heatArrow.setEnabled(!mar && sim.TH - sim.TL > 1);
+    heatArrow.setEnabled(!mar && contact() && sim.TH - sim.TL > 1);
 
     if (mar) {
+      // 손으로 잡아 흔든 만큼 상자와 구슬이 함께 움직인다
+      // (단추로 흔드는 동안에는 저절로 좌우로 흔들린다)
+      const off = grab ? shakeOff : (state.running ? Math.sin(sim.t * 13) * 0.16 : 0);
+      boxG.position.x = off;
       marbles.forEach((mb) => {
-        mb.m.position.set(mb.x, mb.y, mb.z);
+        mb.m.position.set(mb.x + off, mb.y, mb.z);
       });
     } else {
+      blockA.position.x = blkAx;
+      blockB.position.x = blkBx;
+      heatArrow.position.x = (blkAx + blkBx) / 2 + 0.15;
       drawBlockLabel(blockTexA, sim.TH, '블록 A (고온)');
       drawBlockLabel(blockTexB, sim.TL, '블록 B (저온)');
       // 온도에 따라 색이 변한다
@@ -355,6 +386,7 @@ const EntropyScene = (() => {
       blockA._body.material.diffuseColor = new (B().Color3)(0.45 + kA * 0.45, 0.36, 0.42);
       blockB._body.material.diffuseColor = new (B().Color3)(0.35 + kB * 0.5, 0.42, 0.75 - kB * 0.3);
     }
+    layoutSteppers();
   }
 
   function tick(dt) {
@@ -393,6 +425,8 @@ const EntropyScene = (() => {
 
     // 열 모드: Q̇ ∝ (TH−TL), 열용량 같다고 가정
     if (!state.running) return false;
+    // 떨어져 있으면 열이 흐르지 않는다 (손으로 떼어 놓으면 멈춘다)
+    if (!contact()) { state.running = false; syncRunBtn(); layout(); return true; }
     const kCond = 0.10;                  // 전도 계수 (연출)
     const C = 50;                        // 각 블록 열용량 (J/K)
     const Qdot = kCond * (sim.TH - sim.TL) * C;
@@ -424,8 +458,176 @@ const EntropyScene = (() => {
     camera.setTarget(new (B().Vector3)(state.mode === 'marbles' ? 0 : 0, 1.4, 0));
   }
 
+  /* ══ 화면에서 직접 조작 ═══════════════════════
+     구슬 모드 — 상자를 «톡 누르면» 흔들기가 시작·정지되고,
+                «잡고 좌우로 흔들면» 흔드는 동안에만 구슬이 섞인다.
+     열 모드   — 금속 블록을 «끌어다 맞대면» 열이 흐르고 «떼어 놓으면» 멈춘다.
+                떨어져 있을 때는 블록 위 ＋ / － 로 처음 온도를 맞춘다.        */
+
+  /** 두 블록이 맞닿았는가 */
+  function contact() { return blkBx - blkAx <= BLK_W + 0.06; }
+
+  function buildSteppers() {
+    stepH = LabUI.makeStepper(scene, 'TH');
+    stepL = LabUI.makeStepper(scene, 'TL');
+  }
+
+  /** ＋ / － 단추는 블록 바로 위에 띄우고, 떨어져 있을 때만 쓴다 */
+  function layoutSteppers() {
+    if (!stepH) return;
+    const on = allPlaced() && state.mode === 'heat' && !contact();
+    stepH.place(blkAx, 3.6, 0, 0.75);
+    stepL.place(blkBx, 3.6, 0, 0.75);
+    stepH.setEnabled(on);
+    stepL.setEnabled(on);
+  }
+
+  /** 하단의 실행 단추 글씨를 지금 상태에 맞춘다 */
+  function runLabel() { return state.mode === 'marbles' ? '▶ 흔들기' : '▶ 블록 접촉'; }
+  function syncRunBtn() {
+    const b = document.querySelector('#runBtn');
+    if (!b) return;
+    b.textContent = state.running
+      ? (state.mode === 'marbles' ? '흔드는 중…' : '열 이동 중…') : runLabel();
+    b.classList.toggle('run', state.running);
+  }
+
+  /** 화면의 한 점을 «카메라를 마주 보는 세로 평면» 위의 세계 좌표로 바꾼다 */
+  function pointerOn(y) {
+    const org = new (B().Vector3)(0, y, 0);
+    const nx = camera.position.x - org.x, nz = camera.position.z - org.z;
+    const len = Math.hypot(nx, nz);
+    if (len < 1e-4) return null;
+    const ray = scene.createPickingRay(scene.pointerX, scene.pointerY, null, camera);
+    const plane = B().Plane.FromPositionAndNormal(org, new (B().Vector3)(nx / len, 0, nz / len));
+    const d = ray.intersectsPlane(plane);
+    if (d === null) return null;
+    return ray.origin.add(ray.direction.scale(d));
+  }
+
+  /** 블록의 처음 온도를 10 K 씩 올리고 내린다 (맞대기 전에만)
+   *  한계에 걸리면 그대로 둔다 — 누른 것과 «반대쪽»으로 튀지 않게 (열이 얼마쯤
+   *  흐른 뒤 떼어 놓으면 두 온도의 차가 20 K 보다 작을 수 있다) */
+  function bumpT(which, d) {
+    if (!sim || contact()) return;
+    const now = which === 'H' ? sim.TH : sim.TL;
+    const v = which === 'H'
+      ? Math.min(380, Math.max(sim.TL + 20, sim.TH + d * 10))
+      : Math.max(260, Math.min(sim.TH - 20, sim.TL + d * 10));
+    if (d > 0 ? v <= now : v >= now) return;      // 한계 — 아무 일도 하지 않는다
+    if (which === 'H') sim.TH = v; else sim.TL = v;
+    // 아직 흐르기 전이면 출발점을 고쳐 잡고, 이미 흘렀으면 그 자리에서 이어 그린다
+    const last = { t: sim.t, TH: sim.TH, TL: sim.TL, dS: sim.dS };
+    if (sim.t === 0) sim.sHist = [last];
+    else sim.sHist.push(last);
+    layout();
+    if (onChangeCb) onChangeCb();
+  }
+
+  function setupPointer(canvas) {
+    scene.onPointerObservable.add((pi) => {
+      const T = B().PointerEventTypes;
+      const pm = (pi.pickInfo && pi.pickInfo.pickedMesh) || null;
+      const nm = pm ? pm.name : '';
+
+      if (pi.type === T.POINTERDOWN) {
+        if (!allPlaced() || !sim) return;
+        if (nm === 'btnAddTH') { bumpT('H', +1); return; }
+        if (nm === 'btnSubTH') { bumpT('H', -1); return; }
+        if (nm === 'btnAddTL') { bumpT('L', +1); return; }
+        if (nm === 'btnSubTL') { bumpT('L', -1); return; }
+
+        if (state.mode === 'marbles') {
+          // 상자를 잡는다 (바닥·벽 어디든)
+          if (!pm || pm.parent !== boxG) return;
+          const p = pointerOn(BOX_H / 2);
+          if (!p) return;
+          grab = { x0: p.x, last: p.x, path: 0, moved: false, was: state.running };
+          shakeOff = 0;
+          camera.detachControl();
+          return;
+        }
+        // 열 모드 — 블록을 집는다 (몸통이든 온도 딱지든)
+        let which = null;
+        if (pm && (pm === blockA._body || pm.parent === blockA)) which = 'A';
+        else if (pm && (pm === blockB._body || pm.parent === blockB)) which = 'B';
+        if (!which) return;
+        const p = pointerOn(0.9);
+        if (!p) return;
+        blkDrag = { which, x0: p.x, base: which === 'A' ? blkAx : blkBx };
+        camera.detachControl();
+        return;
+      }
+
+      if (pi.type === T.POINTERMOVE) {
+        if (grab) {
+          const p = pointerOn(BOX_H / 2);
+          if (!p) return;
+          shakeOff = Math.max(-1.1, Math.min(1.1, p.x - grab.x0));
+          grab.path += Math.abs(p.x - grab.last);
+          grab.last = p.x;
+          // 좌우로 충분히 흔들면 그때부터 구슬이 섞인다
+          if (!grab.moved && grab.path > 0.5) {
+            grab.moved = true;
+            state.running = true;
+            syncRunBtn();
+          }
+          layout();
+          if (onChangeCb) onChangeCb();
+          return;
+        }
+        if (blkDrag) {
+          const p = pointerOn(0.9);
+          if (!p) return;
+          const was = contact();
+          // 상대 블록을 뚫고 지나가지는 못한다 (맞닿는 데까지만)
+          const nx2 = blkDrag.base + (p.x - blkDrag.x0);
+          if (blkDrag.which === 'A') blkAx = Math.max(-4.6, Math.min(blkBx - BLK_W, nx2));
+          else blkBx = Math.min(4.6, Math.max(blkAx + BLK_W, nx2));
+          const now = contact();
+          if (now !== was) {          // 맞대면 열이 흐르고, 떼면 멈춘다
+            state.running = now;
+            syncRunBtn();
+          }
+          layout();
+          if (onChangeCb) onChangeCb();
+        }
+        return;
+      }
+
+      if (pi.type === T.POINTERUP) endDrag(canvas);
+    });
+    // 화면 밖에서 손을 떼도 잡은 것이 풀리도록
+    const release = () => { if (grab || blkDrag) endDrag(canvas); };
+    window.addEventListener('pointerup', release);
+    window.addEventListener('pointercancel', release);
+  }
+
+  /** 잡았던 것을 놓는다 */
+  function endDrag(canvas) {
+    if (grab) {
+      // 거의 움직이지 않았으면 «톡 누른 것» — 흔들기를 켜고 끈다
+      state.running = grab.moved ? grab.was : !grab.was;
+      grab = null;
+      shakeOff = 0;
+    } else if (blkDrag) {
+      // 맞닿았으면 딱 붙여 준다
+      if (contact()) {
+        if (blkDrag.which === 'A') blkAx = blkBx - BLK_W;
+        else blkBx = blkAx + BLK_W;
+      }
+      blkDrag = null;
+    } else {
+      return;
+    }
+    camera.attachControl(canvas, true);
+    syncRunBtn();
+    layout();
+    if (onChangeCb) onChangeCb();
+  }
+
   /* ══ 컨트롤 ═════════════════════════════════ */
-  const guide = '상자를 흔들면 구슬이 양쪽으로 골고루 퍼집니다. 다시 한쪽으로 모이는 일은 일어날까요? 상태 수 W 를 지켜보세요.';
+  const guide = '상자를 흔들면 구슬이 양쪽으로 골고루 퍼집니다. 화면에서 상자를 잡고 직접 흔들어도 됩니다. 다시 한쪽으로 모이는 일은 일어날까요? 상태 수 W 를 지켜보세요.';
   const prepGuide = '점선 자리에 상자·구슬·금속 블록·온도계를 끌어다 놓아 실험을 준비하세요.';
 
   function controlsHTML() {
@@ -442,6 +644,11 @@ const EntropyScene = (() => {
         <div class="control">
           <div class="clabel">처음<br>상태로</div>
           <button class="power off" id="resetBtn">↻ 처음 상태로</button>
+        </div>
+        <div class="control">
+          <div class="clabel">직접<br>조작</div>
+          <div class="cbody"><p class="hands-on">화면의 <b>상자를 톡 누르면</b> 흔들기가 시작·정지되고,
+            <b>상자를 잡고 좌우로 흔들면</b> 흔드는 동안에만 구슬이 섞인다.</p></div>
         </div>`;
     }
     return `
@@ -453,10 +660,16 @@ const EntropyScene = (() => {
       <div class="control">
         <div class="clabel">처음<br>상태로</div>
         <button class="power off" id="resetBtn">↻ 처음 상태로</button>
+      </div>
+      <div class="control">
+        <div class="clabel">직접<br>조작</div>
+        <div class="cbody"><p class="hands-on">화면의 <b>금속 블록을 끌어다 맞대면</b> 열이 흐르고
+          <b>떼어 놓으면</b> 멈춘다. 떨어져 있는 동안에는 블록 위 <b>＋ －</b> 로 처음 온도를 10 K 씩 맞춘다.</p></div>
       </div>`;
   }
 
   function bindControls(root, onChange) {
+    onChangeCb = onChange;      // 3D 에서 조작해도 측정값이 갱신되도록
     root.querySelectorAll('[data-mode]').forEach((b) => b.addEventListener('click', () => {
       state.mode = b.dataset.mode;
       reset();
@@ -465,9 +678,15 @@ const EntropyScene = (() => {
       onChange();
     }));
     const run = root.querySelector('#runBtn');
-    const label = state.mode === 'marbles' ? '▶ 흔들기' : '▶ 블록 접촉';
+    const label = runLabel();
     run.addEventListener('click', () => {
       state.running = !state.running;
+      // 단추로 열 이동을 시작하면 블록도 저절로 맞닿는다
+      if (state.running && state.mode === 'heat' && !contact()) {
+        const c = (blkAx + blkBx) / 2;
+        blkAx = c - BLK_W / 2; blkBx = c + BLK_W / 2;
+        layout();
+      }
       run.textContent = state.running ? (state.mode === 'marbles' ? '흔드는 중…' : '열 이동 중…') : label;
       run.classList.toggle('run', state.running);
       onChange();
@@ -509,7 +728,8 @@ const EntropyScene = (() => {
       <div class="row"><span>블록 A (고온)</span><b class="big">${sim.TH.toFixed(1)} K</b></div>
       <div class="row"><span>블록 B (저온)</span><b class="big">${sim.TL.toFixed(1)} K</b></div>
       <div class="row"><span>열의 방향</span>
-        <b>${sim.TH - sim.TL > 1 ? 'A → B (고온 → 저온)' : '열평형 도달!'}</b></div>
+        <b>${!contact() ? '떨어져 있어 열이 흐르지 않음'
+      : (sim.TH - sim.TL > 1 ? 'A → B (고온 → 저온)' : '열평형 도달!')}</b></div>
       <div class="sec">엔트로피</div>
       <div class="row"><span>누적 Δ<i>S</i> = ΣQ(1/T<sub>L</sub> − 1/T<sub>H</sub>)</span>
         <b class="big">+${sim.dS.toFixed(3)} J/K</b></div>
@@ -595,7 +815,10 @@ const EntropyScene = (() => {
     if (state.mode === 'marbles') {
       return 'A 의 구슬 수가 <b>10 근처</b>로 가서 요동합니다 — 20 으로 되돌아가는 일은 관찰되지 않습니다';
     }
-    return '두 온도는 <b>열평형</b>(320 K)으로 수렴하고 엔트로피는 <b>단조 증가</b>합니다';
+    // 두 블록의 열용량이 같으므로 열평형 온도는 «두 온도의 한가운데» — 흐르는 동안 변하지 않는다
+    // (＋ / － 로 처음 온도를 바꾸면 320 K 가 아닐 수 있다)
+    const Teq = sim ? (sim.TH + sim.TL) / 2 : 320;
+    return `두 온도는 <b>열평형</b>(${Teq.toFixed(0)} K)으로 수렴하고 엔트로피는 <b>단조 증가</b>합니다`;
   }
 
   /* ══ 기록표 (해 보기 73쪽) ═══════════════════ */

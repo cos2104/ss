@@ -12,6 +12,8 @@ const MagnetismScene = (() => {
 
   const GRID_X = 7, GRID_Z = 4;      // 자기 구역 격자
   const SAMPLE_X = 4;                 // 시료 중심
+  const DIST_MIN = 0.5, DIST_MAX = 9, DIST_STEP = 0.25;   // 아래 슬라이더와 같은 범위
+  const AWAY = 6.5;                   // «치움» 일 때 자석이 더 물러나는 거리
 
   let scene, camera;
   let magnet, sample, sampleBody, domains = [], resultTex, resultG;
@@ -97,10 +99,13 @@ const MagnetismScene = (() => {
     buildSample();
     buildResult();
     buildPlaceholders();
+    buildStepper();
+    setupPointer(canvas);
 
     glow.addExcludedMesh(scene.getMeshByName('mgResultFace'));
+    if (stepD) { glow.addExcludedMesh(stepD.add); glow.addExcludedMesh(stepD.sub); }
     // 교과서 그림 액자 (배경 소품)
-    LabUI.addPoster(scene, '../assets/thumbs/magnetism.jpg', { x: -9.5, y: -1.2, z: 4.5, ry: 0.34 });
+    LabUI.addPoster(scene, '../assets/thumbs/magnetism.jpg', { x: -6.5, y: -1.2, z: 6.2 });
 
     resetTools();
     return scene;
@@ -309,7 +314,11 @@ const MagnetismScene = (() => {
   function dropAt(id, point) {
     const s = slots[id];
     if (id === 'meter') return point.y > 3.2 ? 'ok' : 'wrong';
-    return (Math.abs(point.x - s.x) <= 3.4 && point.y <= 3.6) ? 'ok' : 'wrong';
+    // 자석의 점선 자리는 «치움» 상태를 그대로 보여 주려고 왼쪽으로 물러나 있다
+    // (update() 에서 holders.magnet 을 자석 자리로 옮긴다).
+    // 받아 주는 자리도 «점선이 그려진 곳» 에 맞춰야 학생이 점선 위에 놓을 수 있다.
+    const cx = id === 'magnet' ? magnetX() : s.x;
+    return (Math.abs(point.x - cx) <= 3.4 && point.y <= 3.6) ? 'ok' : 'wrong';
   }
   function slotName(id) { return slots[id].name; }
 
@@ -320,14 +329,23 @@ const MagnetismScene = (() => {
 
     // 자석을 «치움»으로 두면 눈에 보이게 멀리 물러난다
     // (화면에는 가까이 있는데 반응이 없어 보이면 오개념이 생긴다)
-    const away = state.applied ? 0 : 6.5;
-    magnet.position.x = SAMPLE_X - state.dist - 3.4 - away;
+    magnet.position.x = magnetX();
     if (holders.magnet) holders.magnet.position.x = magnet.position.x;
 
     sampleBody.material.diffuseColor = B().Color3.FromHexString(m.color);
     if (placed.meter) drawResult();
+    layoutStepper();
     layoutDomains();
   }
+
+  /** 지금 상태에서 자석 중심이 놓일 x 좌표 */
+  function magnetX() {
+    const away = state.applied ? 0 : AWAY;
+    return SAMPLE_X - state.dist - 3.4 - away;
+  }
+
+  /** 자석 중심의 x 좌표를 «시료에서 떨어진 정도» 로 되돌린다 (magnetX 의 반대) */
+  function gapAt(x) { return SAMPLE_X - 3.4 - x; }
 
   /** 자기 구역 화살표 방향 — 정렬도에 따라 */
   function layoutDomains() {
@@ -365,8 +383,152 @@ const MagnetismScene = (() => {
     camera.setTarget(new (B().Vector3)(1.2, 1.6, 0));
   }
 
+  /* ══ 화면에서 직접 조작 ═══════════════════════
+     실제 실험에서 손으로 하는 동작을 그대로 옮긴다.
+     · 막대자석을 잡고 «시료 쪽으로 밀거나 멀리 끌어내» 거리를 바꾼다.
+       가장 먼 자리보다 더 멀리 끌어내면 자석을 «치운» 것이 된다.
+     · 자석 위 ＋ / － 로 거리를 0.25 cm 씩 미세 조정한다.
+     · 시료를 누르면 물질이 차례로 바뀐다 (시료를 갈아 끼우는 것과 같다).   */
+  const MAT_CYCLE = ['ferro', 'para', 'dia'];
+  let stepD = null;
+  let dragMag = null;        // { off } — 집은 지점과 자석 중심의 차이
+  let down = null;           // { x, y, mesh } — 누른 순간의 자리
+  let onChangeCb = null;
+
+  function buildStepper() { stepD = LabUI.makeStepper(scene, 'Dist'); }
+
+  /** ＋ / － 단추는 자석을 따라다닌다 */
+  function layoutStepper() {
+    if (!stepD) return;
+    stepD.place(magnet.position.x, 3.2, 0, 0.85);
+    stepD.setEnabled(allPlaced());
+  }
+
+  /** 아래 조작 막대의 표시를 3D 조작에 맞춘다 */
+  function syncDistUI() {
+    const el = document.querySelector('#dist');
+    const out = document.querySelector('#distOut');
+    if (el) el.value = state.dist;
+    if (out) out.textContent = `${state.dist.toFixed(2)} cm`;
+  }
+  function syncApplyUI() {
+    const ap = document.querySelector('#applyBtn');
+    if (!ap) return;
+    ap.textContent = state.applied ? '가까이' : '치움';
+    ap.classList.toggle('off', !state.applied);
+  }
+  function syncMaterialUI() {
+    document.querySelectorAll('[data-material]').forEach((b) =>
+      b.classList.toggle('on', b.getAttribute('data-material') === state.material));
+  }
+
+  /** 자석을 가까이 두거나 치운다 — 아래 단추와 3D 끌기가 함께 쓴다 */
+  function setApplied(on) {
+    if (state.applied === on) return;
+    const m = MATERIALS[state.material];
+    if (state.applied) {
+      // 자석을 뗄 때 : 강자성체만 자화가 남는다.
+      // 전체 정렬도(alignment + remanence)가 튀지 않도록 남길 몫만큼을 alignment 에서 덜어 낸다.
+      const total = alignment + remanence;
+      remanence = m.keeps ? total * 0.72 : 0;
+      alignment = total - remanence;
+    } else {
+      // 다시 가까이 가져갈 때는 남은 자화를 alignment 로 되돌려 이어서 계산한다
+      alignment += remanence;
+      remanence = 0;
+    }
+    state.applied = on;
+    syncApplyUI();
+    if (typeof Lab !== 'undefined' && Lab.showHint) {
+      Lab.showHint(on
+        ? '자석을 시료에 가까이 댔습니다'
+        : '자석을 치웠습니다 — 정렬이 남아 있는지 보세요', true);
+    }
+  }
+
+  /** 끌어다 놓은 자리를 «거리 + 가까이/치움» 으로 옮겨 담는다 */
+  function moveMagnetTo(x) {
+    const gap = Math.max(DIST_MIN, Math.min(DIST_MAX + AWAY, gapAt(x)));
+    const on = gap <= DIST_MAX;               // 가장 먼 자리를 넘기면 «치움»
+    const d = on ? gap : gap - AWAY;
+    setApplied(on);
+    state.dist = Math.max(DIST_MIN, Math.min(DIST_MAX,
+      Math.round(d / DIST_STEP) * DIST_STEP));
+    syncDistUI();
+    update();
+    if (onChangeCb) onChangeCb();
+  }
+
+  function bumpDist(d) {
+    state.dist = Math.max(DIST_MIN, Math.min(DIST_MAX,
+      +(state.dist + d * DIST_STEP).toFixed(2)));
+    syncDistUI();
+    update();
+    if (onChangeCb) onChangeCb();
+  }
+
+  /** 시료를 갈아 끼운다 — 새 시료이므로 자화는 없다 */
+  function cycleMaterial() {
+    const i = MAT_CYCLE.indexOf(state.material);
+    state.material = MAT_CYCLE[(i + 1) % MAT_CYCLE.length];
+    alignment = 0; remanence = 0;
+    syncMaterialUI();
+    update();
+    if (onChangeCb) onChangeCb();
+    if (typeof Lab !== 'undefined' && Lab.showHint) {
+      const m = MATERIALS[state.material];
+      Lab.showHint(`시료를 ${m.name} (${m.ex.split('·')[0]}) 로 바꿨습니다`, true);
+    }
+  }
+
+  /** 화면 위 한 점을 자석이 놓인 세로면(z = 0) 위의 좌표로 바꾼다 */
+  function planePoint() {
+    const ray = scene.createPickingRay(scene.pointerX, scene.pointerY, null, camera);
+    const plane = B().Plane.FromPositionAndNormal(
+      new (B().Vector3)(0, 1.0, 0), new (B().Vector3)(0, 0, 1));
+    const d = ray.intersectsPlane(plane);
+    if (d === null) return null;
+    return ray.origin.add(ray.direction.scale(d));
+  }
+
+  const isMagnet = (nm) => nm === 'mgN' || nm === 'mgS' || nm.indexOf('mgLab') === 0;
+  const isSample = (nm) => /^(mgSampleBody|ds\d|dh\d)/.test(nm);
+
+  function setupPointer(canvas) {
+    scene.onPointerObservable.add((pi) => {
+      const T = B().PointerEventTypes;
+      const nm = pi.pickInfo && pi.pickInfo.pickedMesh ? pi.pickInfo.pickedMesh.name : '';
+      if (pi.type === T.POINTERDOWN) {
+        if (!allPlaced()) return;             // 배치가 끝나기 전에는 조작하지 않는다
+        down = { x: scene.pointerX, y: scene.pointerY, mesh: nm };
+        if (nm === 'btnAddDist') { bumpDist(+1); return; }
+        if (nm === 'btnSubDist') { bumpDist(-1); return; }
+        if (isMagnet(nm)) {
+          const pt = planePoint();
+          if (!pt) return;
+          dragMag = { off: pt.x - magnet.position.x };
+          camera.detachControl();
+        }
+      } else if (pi.type === T.POINTERMOVE && dragMag) {
+        const pt = planePoint();
+        if (!pt) return;
+        moveMagnetTo(pt.x - dragMag.off);
+      } else if (pi.type === T.POINTERUP) {
+        if (dragMag) {
+          dragMag = null;
+          camera.attachControl(canvas, true);
+        } else if (down && isSample(down.mesh)
+          && Math.abs(scene.pointerX - down.x) < 5
+          && Math.abs(scene.pointerY - down.y) < 5) {
+          cycleMaterial();                    // 끌지 않고 «톡» 누른 것만 시료 교체
+        }
+        down = null;
+      }
+    });
+  }
+
   /* ══ 컨트롤 ═════════════════════════════════ */
-  const guide = '물질의 종류를 바꿔 가며 자석을 가까이했을 때 <b>자기 구역</b>이 어떻게 정렬되는지 보세요.';
+  const guide = '막대자석을 잡고 시료 쪽으로 밀거나 멀리 끌어내며 <b>자기 구역</b>이 어떻게 정렬되는지 보세요. 시료를 누르면 물질의 종류가 바뀝니다.';
   const prepGuide = '점선으로 표시된 자리에 자석·시료·측정판을 끌어다 놓으세요.';
 
   function controlsHTML() {
@@ -377,7 +539,16 @@ const MagnetismScene = (() => {
         { v: 'dia', t: '반자성체 (구리)' },
       ], state.material, 2)}
       ${LabUI.slider('dist', '자석까지<br>거리',
-        { min: 0.5, max: 9, step: 0.25, value: state.dist, fmt: (v) => `${v.toFixed(2)} cm` })}
+        { min: DIST_MIN, max: DIST_MAX, step: DIST_STEP, value: state.dist,
+          fmt: (v) => `${v.toFixed(2)} cm` })}
+      <div class="control">
+        <div class="clabel">직접<br>조작</div>
+        <div class="cbody"><p class="hands-on">
+          <b>막대자석을 잡고 끌어</b> 시료에 가까이 대거나 멀리 치웁니다.
+          자석 위 <b>＋ · －</b> 로 거리를 미세하게 맞추고,
+          <b>시료를 누르면</b> 물질의 종류가 차례로 바뀝니다.
+        </p></div>
+      </div>
       <div class="control">
         <div class="clabel">자석</div>
         <button class="power${state.applied ? '' : ' off'}" id="applyBtn">${state.applied ? '가까이' : '치움'}</button>
@@ -389,6 +560,7 @@ const MagnetismScene = (() => {
   }
 
   function bindControls(root, onChange) {
+    onChangeCb = onChange;      // 3D 에서 조작해도 측정값이 갱신되도록
     LabUI.bindOpts(root, 'material', state, 'material', () => {
       alignment = 0; remanence = 0;
       onChange();
@@ -397,21 +569,7 @@ const MagnetismScene = (() => {
 
     const ap = root.querySelector('#applyBtn');
     ap.addEventListener('click', () => {
-      const m = MATERIALS[state.material];
-      if (state.applied) {
-        // 자석을 뗄 때 : 강자성체만 자화가 남는다.
-        // 전체 정렬도(alignment + remanence)가 튀지 않도록 남길 몫만큼을 alignment 에서 덜어 낸다.
-        const total = alignment + remanence;
-        remanence = m.keeps ? total * 0.72 : 0;
-        alignment = total - remanence;
-      } else {
-        // 다시 가까이 가져갈 때는 남은 자화를 alignment 로 되돌려 이어서 계산한다
-        alignment += remanence;
-        remanence = 0;
-      }
-      state.applied = !state.applied;
-      ap.textContent = state.applied ? '가까이' : '치움';
-      ap.classList.toggle('off', !state.applied);
+      setApplied(!state.applied);   // 자화가 남는 계산은 setApplied 가 함께 맡는다
       onChange();
     });
 

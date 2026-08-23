@@ -19,7 +19,7 @@ const GasScene = (() => {
   const CYL_W = 3.0, H_PER_L = 0.55;
 
   let scene, camera;
-  let cylG, piston, pistonRod, parts = [], gaugeTex, thermoTex, heaterG;
+  let cylG, piston, pistonRod, pistonGrip, parts = [], gaugeTex, thermoTex, heaterG;
   let placed = {};
 
   const state = {
@@ -95,8 +95,10 @@ const GasScene = (() => {
     buildPlaceholders();
 
     // 교과서 그림 액자 (배경 소품)
-    LabUI.addPoster(scene, '../assets/thumbs/gas.jpg', { x: -8, y: 0, z: 5.5, ry: 0.3 });
+    LabUI.addPoster(scene, '../assets/thumbs/gas.jpg', { x: -11.5, y: 0, z: 5.5 });
 
+    buildStepper();
+    setupPointer(canvas);
     resetTools();
     return scene;
   }
@@ -148,6 +150,10 @@ const GasScene = (() => {
     pistonRod = B().MeshBuilder.CreateCylinder('gaRod', { height: 2.4, diameter: 0.22 }, scene);
     pistonRod.material = mat('gaRodMat', '#7a8494', '#cfd6df', 96);
     pistonRod.parent = cylG;
+    // 피스톤 손잡이 — 주사기 피스톤처럼 «손으로 잡고 끄는» 자리를 알려 준다
+    pistonGrip = B().MeshBuilder.CreateBox('gaGrip', { width: 1.5, height: 0.26, depth: 0.44 }, scene);
+    pistonGrip.material = mat('gaGripMat', '#e0912c', '#ffdca8', 48);
+    pistonGrip.parent = cylG;
 
     // 기체 분자
     for (let i = 0; i < NP; i++) {
@@ -287,6 +293,115 @@ const GasScene = (() => {
   }
   function slotName(id) { return slots[id].name; }
 
+  /* ══ 화면에서 직접 조작 ═══════════════════════
+     실제 실험에서 손으로 하는 동작을 그대로 옮긴다.
+       · 등온 · 단열 — 주사기를 밀고 당기듯 «피스톤 손잡이를 위아래로 끈다»
+       · 등압 · 등적 — 가열기 옆 «＋ / －» 를 눌러 불꽃을 세게·약하게 한다
+     값의 범위와 계산은 하단 슬라이더와 똑같이 유지한다.               */
+  let stepT = null;              // 가열기 ＋ / － 단추
+  let dragPiston = null;         // { dy } 잡은 지점과 피스톤 높이의 차
+  let onChangeCb = null;         // 3D 에서 조작해도 측정값이 갱신되도록
+
+  /** 부피를 손으로 바꿀 수 있는 과정인가 (하단 V 슬라이더가 뜨는 과정과 같다) */
+  const canDragPiston = () => state.process === 'isothermal' || state.process === 'adiabatic';
+  /** 가열기로 온도를 바꿀 수 있는 과정인가 (단열은 Q = 0 이므로 가열하지 않는다) */
+  const canHeat = () => state.process === 'isobaric' || state.process === 'isochoric';
+
+  function buildStepper() {
+    stepT = LabUI.makeStepper(scene, 'Temp', { addColor: '#e0632c' });
+  }
+
+  /** 단추 자리 — 버너 앞쪽에 두어 실린더·센서와 겹치지 않게 한다 */
+  function layoutSteppers() {
+    if (!stepT) return;
+    stepT.place(0, 0.95, -2.4, 0.85);
+    stepT.setEnabled(allPlaced() && canHeat());
+  }
+
+  /** 3D 에서 바꾼 값을 미세 조정용 슬라이더에도 되비친다 */
+  function syncSliders() {
+    const set = (id, v, txt) => {
+      const el = document.querySelector('#' + id);
+      const out = document.querySelector('#' + id + 'Out');
+      if (el) el.value = v;
+      if (out) out.textContent = txt;
+    };
+    set('vCtl', state.V.toFixed(1), `${state.V.toFixed(1)} L`);
+    set('tCtl', Math.round(state.T), `${Math.round(state.T)} K`);
+  }
+
+  /** 직접 조작 뒤 — 경로에 점을 찍고 화면과 측정값을 갱신한다 */
+  function afterHandsOn() {
+    path.push({ P: P(), V: state.V, proc: state.process });
+    if (path.length > 300) path.shift();
+    layout();
+    syncSliders();
+    if (onChangeCb) onChangeCb();
+  }
+
+  /** 가열기 ＋ / － — 슬라이더와 같은 200~600 K 안에서 10 K 씩 바꾼다 */
+  function bumpT(d) {
+    if (!allPlaced() || !canHeat()) return;
+    const t = Math.max(200, Math.min(600, Math.round((state.T + d * 10) / 5) * 5));
+    if (t === state.T) return;
+    state.T = t;
+    if (state.process === 'isobaric') {
+      // V/T = 일정 — 슬라이더와 똑같은 계산
+      state.V = anchor.V * state.T / anchor.T;
+      state.V = Math.min(11, Math.max(1.5, state.V));
+    }
+    afterHandsOn();
+  }
+
+  /** 화면 위 한 점을 실린더 축을 지나는 «세로 평면» 위의 높이로 바꾼다 */
+  function pointerY() {
+    const fwd = camera.getForwardRay().direction;
+    const n = new (B().Vector3)(fwd.x, 0, fwd.z);
+    if (n.length() < 0.15) return null;      // 거의 바로 위에서 내려다보는 각도면 잡지 않는다
+    n.normalize();
+    const ray = scene.createPickingRay(scene.pointerX, scene.pointerY, null, camera);
+    const plane = B().Plane.FromPositionAndNormal(new (B().Vector3)(0, cylG.position.y, 0), n);
+    const d = ray.intersectsPlane(plane);
+    if (d === null) return null;
+    return ray.origin.add(ray.direction.scale(d)).y;
+  }
+
+  /** 피스톤 윗면의 현재 높이 (세계 좌표) */
+  const pistonWorldY = () => cylG.position.y + state.V * H_PER_L + 0.17;
+
+  function setupPointer(canvas) {
+    scene.onPointerObservable.add((pi) => {
+      const T = B().PointerEventTypes;
+      const nm = pi.pickInfo && pi.pickInfo.pickedMesh ? pi.pickInfo.pickedMesh.name : '';
+      if (pi.type === T.POINTERDOWN) {
+        if (!allPlaced()) return;                    // 배치가 끝나기 전에는 조작하지 않는다
+        if (nm === 'btnAddTemp') { bumpT(+1); return; }
+        if (nm === 'btnSubTemp') { bumpT(-1); return; }
+        if (/^(gaPiston|gaRod|gaGrip)/.test(nm) && canDragPiston()) {
+          const y = pointerY();
+          if (y === null) return;
+          dragPiston = { dy: pistonWorldY() - y };
+          camera.detachControl();
+        }
+      } else if (pi.type === T.POINTERMOVE && dragPiston) {
+        const y = pointerY();
+        if (y === null) return;
+        const h = (y + dragPiston.dy) - cylG.position.y - 0.17;
+        const v = Math.max(2, Math.min(10, +(h / H_PER_L).toFixed(1)));
+        if (v === state.V) return;
+        state.V = v;
+        if (state.process === 'adiabatic') {
+          // TV^(γ−1) = 일정 — 슬라이더와 똑같은 계산
+          state.T = anchor.T * Math.pow(anchor.V / state.V, GAMMA - 1);
+        }
+        afterHandsOn();
+      } else if (pi.type === T.POINTERUP && dragPiston) {
+        dragPiston = null;
+        camera.attachControl(canvas, true);
+      }
+    });
+  }
+
   /* ══ 진행 ═══════════════════════════════════ */
   function reset() {
     state.V = 5; state.T = 300;
@@ -302,9 +417,20 @@ const GasScene = (() => {
     path.push({ P: P(), V: state.V, proc: state.process });
   }
 
+  /** 피스톤·손잡이 자리 — 부피가 높이를 정한다 */
+  function placePiston(h) {
+    piston.position.y = h + 0.17;
+    pistonRod.position.y = h + 1.5;
+    pistonGrip.position.y = h + 2.82;
+    // 끌 수 있는 과정에서는 손잡이가 주황빛, 잠긴 과정에서는 회색으로 보인다
+    pistonGrip.material.diffuseColor =
+      B().Color3.FromHexString(canDragPiston() ? '#e0912c' : '#7a8494');
+  }
+
   function layout() {
     if (!sim) return;
     const all = allPlaced();
+    layoutSteppers();
 
     // 준비 단계 — 놓은 도구부터 하나씩 나타난다 (실험대는 항상 보임)
     if (!all) {
@@ -313,9 +439,7 @@ const GasScene = (() => {
       tGauge.setEnabled(!!placed.tSensT);
       if (heaterG) heaterG.setEnabled(!!placed.heatT && !!placed.cylT);
       if (placed.cylT) {
-        const h0 = state.V * H_PER_L;
-        piston.position.y = h0 + 0.17;
-        pistonRod.position.y = h0 + 1.5;
+        placePiston(state.V * H_PER_L);
         drawGauges();
       }
       return;
@@ -324,9 +448,7 @@ const GasScene = (() => {
     pGauge.setEnabled(true);
     tGauge.setEnabled(true);
 
-    const h = state.V * H_PER_L;
-    piston.position.y = h + 0.17;
-    pistonRod.position.y = h + 1.5;
+    placePiston(state.V * H_PER_L);
     // 버너 몸체는 항상, 화염은 가열(고온) 중에만
     heaterG.setEnabled(true);
     for (let i = 0; i < 5; i++) {
@@ -372,7 +494,7 @@ const GasScene = (() => {
   }
 
   /* ══ 컨트롤 ═════════════════════════════════ */
-  const guide = '과정을 고르고 슬라이더를 움직여 보세요. 압력·온도 센서가 실시간으로 반응하고, P–V 그래프에 경로가 그려집니다.';
+  const guide = '과정을 고른 뒤 <b>피스톤 손잡이를 끌거나</b> 가열기의 <b>＋ · －</b> 를 눌러 보세요. 압력·온도 센서가 실시간으로 반응하고, P–V 그래프에 경로가 그려집니다.';
   const prepGuide = '점선 자리에 실린더·압력 센서·온도 센서·가열 장치를 끌어다 놓아 실험을 준비하세요.';
 
   const PROC_NAMES = {
@@ -392,9 +514,24 @@ const GasScene = (() => {
       { min: 200, max: 600, step: 5, value: state.T, fmt: (v) => `${v} K` });
 
     const useV = state.process === 'isothermal' || state.process === 'adiabatic';
+    // 과정마다 «손으로 하는 동작» 이 다르다
+    const handsOn = useV
+      ? `<b>피스톤 손잡이를 잡고 위아래로 끌어</b> 부피를 바꿉니다 —
+         주사기를 밀고 당기듯 해 보세요.
+         ${state.process === 'adiabatic' ? '단열이라 가열기는 쓰지 않습니다 (<i>Q</i> = 0).' : ''}`
+      : (state.process === 'isochoric'
+        ? `피스톤이 <b>고정</b>되어 있어 끌리지 않습니다.
+           가열기의 <b>＋ · －</b> 를 눌러 온도만 바꿔 보세요.`
+        : `가열기의 <b>＋ · －</b> 를 누르면 기체가 데워지고
+           <b>피스톤이 저절로 올라갑니다</b>.`);
+
     return `
       ${procBtns}
       ${useV ? vSlider : tSlider}
+      <div class="control">
+        <div class="clabel">직접<br>조작</div>
+        <div class="cbody"><p class="hands-on">${handsOn}</p></div>
+      </div>
       <div class="control">
         <div class="clabel">처음<br>상태로</div>
         <button class="power off" id="resetBtn">↻ 처음 상태로</button>
@@ -402,10 +539,13 @@ const GasScene = (() => {
   }
 
   function bindControls(root, onChange) {
+    onChangeCb = onChange;      // 3D 에서 조작해도 측정값이 갱신되도록
+
     LabUI.bindOpts(root, 'process', state, 'process', () => {
       rebase();
       root.innerHTML = controlsHTML();
       bindControls(root, onChange);
+      layout();                 // 과정이 바뀌면 손잡이·＋/－ 도 함께 바뀐다
       onChange();
     }, String);
 

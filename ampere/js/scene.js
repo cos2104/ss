@@ -89,9 +89,13 @@ const AmpereScene = (() => {
 
     buildBoard();
     buildWire();
+    buildSupply();
     buildCompasses();
+    buildStepper();
+    setupPointer(canvas);
 
     glow.addExcludedMesh(fieldPlane);
+    glow.addExcludedMesh(meterPlane);
     buildPlaceholders();
     // 상시 바닥 — 도구를 놓기 전에도 기본 배경이 보인다
     const __base = B().MeshBuilder.CreateGround('amBase', { width: 24, height: 16 }, scene);
@@ -175,6 +179,126 @@ const AmpereScene = (() => {
       post.material = mat('amPostMat' + i, '#4a5462');
       post.parent = wire;
     });
+  }
+
+  /**
+   * 전원 장치 — 실험대 왼쪽 앞에 놓인다.
+   * 스위치 손잡이, 전류를 나타내는 계기판, 도선의 두 지지대로 이어지는
+   * 집게 전선 두 가닥이 달려 있어 실제 회로처럼 한 바퀴 돈다.
+   */
+  const SUP = { x: -7.0, z: -2.4 };
+  let supply, swPivot, swLever, meterPlane, meterTex;
+  let leadA, leadB, leadHotMat, leadColdMat;
+  const curArrows = [];
+
+  function buildSupply() {
+    supply = new (B().TransformNode)('amSupplyG', scene);
+    supply.parent = wire;                       // 도선을 놓아야 함께 나타난다
+    supply.position.set(SUP.x, 0, SUP.z);
+
+    const body = B().MeshBuilder.CreateBox('amSupply',
+      { width: 3.0, height: 1.6, depth: 1.9 }, scene);
+    body.position.set(0, 0.8, 0);
+    body.material = mat('amSupplyMat', '#39434f', '#93a4ba', 48);
+    body.parent = supply;
+
+    // 계기판 — 지금 흐르는 전류를 숫자로 보여 준다
+    meterPlane = B().MeshBuilder.CreatePlane('amMeter', { width: 2.1, height: 0.88 }, scene);
+    meterPlane.position.set(0, 0.92, -0.98);
+    meterTex = new (B().DynamicTexture)('amMeterT', { width: 256, height: 108 }, scene, true);
+    const mm = new (B().StandardMaterial)('amMeterM', scene);
+    mm.diffuseTexture = meterTex;
+    mm.emissiveTexture = meterTex;
+    mm.emissiveColor = new (B().Color3)(1, 1, 1);
+    mm.specularColor = new (B().Color3)(0, 0, 0);
+    mm.backFaceCulling = false;
+    meterPlane.material = mm;
+    meterPlane.parent = supply;
+
+    // 스위치 — 받침 위의 손잡이를 내리면 회로가 닫힌다
+    const swBase = B().MeshBuilder.CreateBox('amSwBase',
+      { width: 1.7, height: 0.16, depth: 0.66 }, scene);
+    swBase.position.set(0.6, 1.68, 0.5);
+    swBase.material = mat('amSwBaseMat', '#1b222c');
+    swBase.parent = supply;
+    [-0.7, 0.7].forEach((d, i) => {
+      const stud = B().MeshBuilder.CreateCylinder('amSwStud' + i,
+        { height: 0.2, diameter: 0.3, tessellation: 12 }, scene);
+      stud.position.set(0.6 + d, 1.84, 0.5);
+      stud.material = mat('amSwStudMat' + i, '#d8b46a', '#fff0c0', 64);
+      stud.parent = supply;
+    });
+
+    swPivot = new (B().TransformNode)('amSwPivot', scene);
+    swPivot.position.set(-0.1, 1.9, 0.5);
+    swPivot.parent = supply;
+    swLever = B().MeshBuilder.CreateBox('amSwLever',
+      { width: 1.4, height: 0.14, depth: 0.26 }, scene);
+    swLever.position.set(0.7, 0, 0);
+    swLever.material = mat('amSwLeverMat', '#c9a24a', '#fff3c8', 64);
+    swLever.parent = swPivot;
+    const knob = B().MeshBuilder.CreateSphere('amSwKnob', { diameter: 0.42, segments: 10 }, scene);
+    knob.position.set(1.44, 0.04, 0);
+    knob.material = mat('amSwKnobMat', '#b8352c', '#ffb0a4', 48);
+    knob.parent = swPivot;
+
+    // 집게 전선 — (＋) 쪽이 빨간색이 된다
+    leadHotMat = mat('amLeadHot', '#c8392f', '#ff9a90', 32);
+    leadColdMat = mat('amLeadCold', '#232a34', '#7c8698', 32);
+    const V = (x, y, z) => new (B().Vector3)(x, y, z);
+    [-0.85, 0.85].forEach((d, i) => {
+      const t = B().MeshBuilder.CreateCylinder('amTerm' + (i ? 'B' : 'A'),
+        { height: 0.4, diameter: 0.3, tessellation: 12 }, scene);
+      t.position.set(d, 1.78, -0.55);
+      t.material = mat('amTermMat' + i, '#d8b46a', '#fff0c0', 64);
+      t.parent = supply;
+    });
+    // 앞쪽 지지대로 가는 짧은 전선
+    leadA = B().MeshBuilder.CreateTube('amLeadA', {
+      path: [V(-0.85, 1.96, -0.55), V(-0.85, 1.1, -3.2), V(5.2, 0.8, -3.2), V(7.0, 1.55, -2.64)],
+      radius: 0.085, tessellation: 8, cap: B().Mesh.CAP_ALL,
+    }, scene);
+    leadA.parent = supply;
+    // 뒤쪽 지지대로 가는 전선 — 관찰판을 피해 바깥으로 돌아간다
+    leadB = B().MeshBuilder.CreateTube('amLeadB', {
+      path: [V(0.85, 1.96, -0.55), V(0.85, 1.1, -3.9), V(13.0, 0.7, -3.9),
+        V(13.0, 0.7, 7.44), V(7.0, 1.55, 7.44)],
+      radius: 0.085, tessellation: 8, cap: B().Mesh.CAP_ALL,
+    }, scene);
+    leadB.parent = supply;
+
+    // 전류의 방향을 나타내는 화살표 — 도선 위에서 흐르는 쪽을 가리킨다
+    [-3.2, 0, 3.2].forEach((z, i) => {
+      const a = B().MeshBuilder.CreateCylinder('amCurArrow' + i,
+        { height: 0.8, diameterTop: 0, diameterBottom: 0.52, tessellation: 12 }, scene);
+      a.position.set(0, WIRE_Y, z);
+      const am = new (B().StandardMaterial)('amCurArrowM' + i, scene);
+      am.diffuseColor = B().Color3.FromHexString('#ffd24a');
+      am.emissiveColor = B().Color3.FromHexString('#7a5200');
+      am.specularColor = new (B().Color3)(0, 0, 0);
+      a.material = am;
+      a.parent = wire;
+      curArrows.push(a);
+    });
+  }
+
+  /** 계기판 글씨 — 전류의 세기와 방향을 적는다 */
+  function drawMeter() {
+    if (!meterTex) return;
+    const W = 256, H = 108;
+    const c = meterTex.getContext();
+    c.fillStyle = '#0d1219';
+    c.fillRect(0, 0, W, H);
+    c.strokeStyle = '#2c3a4c'; c.lineWidth = 4;
+    c.strokeRect(2, 2, W - 4, H - 4);
+    c.textAlign = 'center'; c.textBaseline = 'middle';
+    c.fillStyle = state.on ? '#ffb03a' : '#4a5766';
+    c.font = 'bold 42px "Noto Sans KR", sans-serif';
+    c.fillText(`${state.on ? state.current.toFixed(1) : '0.0'} A`, W / 2, 40);
+    c.fillStyle = state.on ? '#4ad8a0' : '#7b8899';
+    c.font = 'bold 21px "Noto Sans KR", sans-serif';
+    c.fillText(state.on ? (state.dir > 0 ? 'ON · 앞 → 뒤' : 'ON · 뒤 → 앞') : 'OFF', W / 2, 84);
+    meterTex.update();
   }
 
   /** 나침반 하나 */
@@ -296,6 +420,31 @@ const AmpereScene = (() => {
     const hot = state.on ? Math.min(0.7, state.current / 12) : 0;
     wire._bar.material.emissiveColor = new (B().Color3)(0.14 + hot, 0.09 + hot * 0.5, 0.03);
 
+    // 스위치 손잡이 — 내려 붙이면 «닫힘(ON)», 들어 올리면 «열림(OFF)»
+    if (swPivot) swPivot.rotation.z = state.on ? 0 : 0.6;
+    if (swLever) swLever.material.emissiveColor = state.on
+      ? B().Color3.FromHexString('#4a3200') : new (B().Color3)(0, 0, 0);
+
+    // 집게 전선 — 전류가 들어가는 (＋) 쪽이 빨간색이 된다
+    if (leadA && leadB) {
+      leadA.material = state.dir > 0 ? leadHotMat : leadColdMat;
+      leadB.material = state.dir > 0 ? leadColdMat : leadHotMat;
+    }
+
+    // 전류 방향 화살표 — 전류가 흐를 때만 보이고 방향을 따라 돈다
+    curArrows.forEach((a) => {
+      a.setEnabled(state.on);
+      a.rotation.x = state.dir > 0 ? Math.PI / 2 : -Math.PI / 2;
+    });
+
+    // 3D 의 ＋ / － 단추 자리 — 전원 장치 위에 띄운다
+    if (stepI) {
+      // 전원 장치 «위쪽 빈 곳»에 띄운다 (칼날 스위치·계기판을 가리지 않게)
+      stepI.place(SUP.x + 1.2, 5.2, SUP.z - 0.6, 0.95);
+      stepI.setEnabled(allPlaced());
+    }
+    drawMeter();
+
     // 나침반 바늘 방향 — 바늘 N 극이 그 지점의 자기장 방향(도선을 감는 동심원의 접선)을 향한다.
     // Babylon 에서 yaw α 일 때 로컬 +x 축은 (cosα, −sinα) 를 향하므로 α = atan2(−bz, bx).
     compasses.forEach((g) => {
@@ -319,8 +468,141 @@ const AmpereScene = (() => {
     camera.setTarget(new (B().Vector3)(0, 0.6, 0));
   }
 
+  /* ══ 화면에서 직접 조작 ═══════════════════════
+     · 전원 장치의 «스위치 손잡이»를 누르면 전류가 켜지고 꺼진다
+     · 전원 장치 위의 «＋ / －» 로 전류의 세기를 바꾼다
+     · «집게 전선»(또는 도선 위의 화살표)을 누르면 전선을 바꿔 끼운 것처럼
+       전류의 방향이 뒤집힌다
+     · «나침반»을 끌어 도선에서 멀거나 가깝게 옮긴다                     */
+  let stepI = null;
+  let drag = null;                  // 끌고 있는 나침반
+  let onChangeCb = null;
+
+  function buildStepper() { stepI = LabUI.makeStepper(scene, 'Cur'); }
+
+  /** 3D 에서 바꾼 값을 아래쪽 조작 막대에도 그대로 비춘다 */
+  function syncPanel() {
+    const sl = document.querySelector('#current');
+    if (sl) sl.value = state.current;
+    const out = document.querySelector('#currentOut');
+    if (out) out.textContent = `${state.current.toFixed(1)} A`;
+    const on = document.querySelector('#onBtn');
+    if (on) {
+      on.textContent = state.on ? 'ON' : 'OFF';
+      on.classList.toggle('off', !state.on);
+    }
+    document.querySelectorAll('[data-dir]').forEach((b) => {
+      b.classList.toggle('on', parseFloat(b.getAttribute('data-dir')) === state.dir);
+    });
+  }
+
+  function hint(text, ok) {
+    if (typeof Lab !== 'undefined' && Lab.showHint) Lab.showHint(text, ok);
+  }
+
+  /**
+   * 조작한 뒤 — 장면과 아래쪽 막대·측정값을 함께 갱신한다.
+   * onChangeCb(= Lab.refresh) 가 이미 update() 를 부르므로 여기서 또 부르지 않는다.
+   * (관찰판 190×190 을 두 번 그리면 느린 기기에서 끌기가 무거워진다)
+   */
+  function after() {
+    syncPanel();
+    if (onChangeCb) onChangeCb();
+    else update();                              // 아직 컨트롤을 묶기 전이면 직접
+  }
+
+  function toggleSwitch() {
+    state.on = !state.on;
+    after();
+    hint(state.on ? '스위치를 닫았습니다 — 전류가 흐릅니다'
+      : '스위치를 열었습니다 — 나침반이 다시 북쪽을 가리킵니다', state.on);
+  }
+
+  function reverseDir() {
+    state.dir = -state.dir;
+    after();
+    hint(state.dir > 0 ? '전류가 앞 → 뒤로 흐릅니다' : '전류가 뒤 → 앞으로 흐릅니다', true);
+  }
+
+  /** 전류의 세기 — 아래쪽 슬라이더와 같은 범위(0.5 ~ 12 A, 0.5 A 눈금) */
+  function bumpCurrent(d) {
+    state.current = Math.max(0.5, Math.min(12, +(state.current + d * 0.5).toFixed(1)));
+    after();
+  }
+
+  /** 이름으로 어느 나침반을 집었는지 찾는다 */
+  function compassOf(name) {
+    const m = /^cmp(?:Base|NTip|STip)(\d+)$/.exec(name || '');
+    return m ? compasses[+m[1]] : null;
+  }
+
+  /** 화면 위의 한 점을 나침반이 놓인 높이의 평면 위 좌표로 바꾼다 */
+  function pointerOnBoard() {
+    const ray = scene.createPickingRay(scene.pointerX, scene.pointerY, null, camera);
+    const plane = B().Plane.FromPositionAndNormal(
+      new (B().Vector3)(0, 0.12, 0), new (B().Vector3)(0, 1, 0));
+    const d = ray.intersectsPlane(plane);
+    if (d === null) return null;
+    return ray.origin.add(ray.direction.scale(d));
+  }
+
+  /**
+   * 나침반을 옮긴다 (단위 m).
+   * g._pos 는 COMPASS_POS 의 원소를 그대로 가리키므로, 옮기면 그래프의
+   * «나침반이 놓인 거리» 표시도 함께 따라온다.
+   */
+  function moveCompass(g, x, z) {
+    const LIM = SPAN * 0.95;                    // 관찰판을 벗어나지 않는다
+    let nx = Math.max(-LIM, Math.min(LIM, x));
+    let nz = Math.max(-LIM, Math.min(LIM, z));
+    const r = Math.hypot(nx, nz);
+    const MIN = 0.05;                           // 도선 바로 밑에는 놓을 수 없다
+    if (r < MIN) {
+      if (r < 1e-6) { nx = MIN; nz = 0; }
+      else { nx = nx / r * MIN; nz = nz / r * MIN; }
+    }
+    nx = +nx.toFixed(4);
+    nz = +nz.toFixed(4);
+    if (nx === g._pos.x && nz === g._pos.z) return;   // 제자리면 다시 그리지 않는다
+    g._pos.x = nx;
+    g._pos.z = nz;
+    g.position.set(nx * U, 0.12, nz * U);
+    if (onChangeCb) onChangeCb();               // Lab.refresh → update() 한 번만
+    else update();
+  }
+
+  function setupPointer(canvas) {
+    scene.onPointerObservable.add((pi) => {
+      const T = B().PointerEventTypes;
+      const picked = pi.pickInfo && pi.pickInfo.pickedMesh;
+      const nm = picked ? picked.name : '';
+
+      if (pi.type === T.POINTERDOWN) {
+        if (!allPlaced()) return;               // 배치가 끝나야 조작할 수 있다
+        if (nm === 'btnAddCur') { bumpCurrent(+1); return; }
+        if (nm === 'btnSubCur') { bumpCurrent(-1); return; }
+        if (/^amSw/.test(nm)) { toggleSwitch(); return; }
+        if (/^(amLead|amTerm|amCurArrow)/.test(nm)) { reverseDir(); return; }
+        const g = compassOf(nm);
+        if (g) {
+          drag = g;
+          camera.detachControl();
+        }
+      } else if (pi.type === T.POINTERMOVE && drag) {
+        const p = pointerOnBoard();
+        if (!p) return;
+        moveCompass(drag, p.x / U, p.z / U);
+      } else if (pi.type === T.POINTERUP && drag) {
+        const r = Math.hypot(drag._pos.x, drag._pos.z);
+        drag = null;
+        camera.attachControl(canvas, true);
+        hint(`도선에서 ${(r * 100).toFixed(1)} cm 떨어진 곳입니다`, true);
+      }
+    });
+  }
+
   /* ══ 컨트롤 ═════════════════════════════════ */
-  const guide = '전류의 방향과 세기를 바꾸며 나침반 바늘이 어떻게 도는지, 도선에서 멀어지면 어떻게 되는지 관찰하세요.';
+  const guide = '전원 장치의 스위치를 눌러 전류를 흘리고, 전류의 방향과 세기를 바꾸며 나침반 바늘이 어떻게 도는지 관찰하세요. 나침반을 끌어 옮기면 거리에 따른 변화도 볼 수 있습니다.';
   const prepGuide = '점선으로 표시된 자리에 관찰 장치·도선·나침반을 끌어다 놓으세요.';
 
   function controlsHTML() {
@@ -331,6 +613,14 @@ const AmpereScene = (() => {
         { v: 1, t: '앞 → 뒤' },
         { v: -1, t: '뒤 → 앞' },
       ], state.dir, 1)}
+      <div class="control">
+        <div class="clabel">직접<br>조작</div>
+        <div class="cbody"><p class="hands-on">
+          전원 장치의 <b>스위치 손잡이를 눌러</b> 전류를 켜고 끕니다.
+          위쪽 <b>＋ · －</b> 로 전류의 세기를, <b>집게 전선이나 화살표를 눌러</b>
+          전류의 방향을 바꿉니다. <b>나침반은 끌어서</b> 옮길 수 있습니다.
+        </p></div>
+      </div>
       <div class="control">
         <div class="clabel">전원</div>
         <button class="power${state.on ? '' : ' off'}" id="onBtn">${state.on ? 'ON' : 'OFF'}</button>
@@ -344,6 +634,7 @@ const AmpereScene = (() => {
   }
 
   function bindControls(root, onChange) {
+    onChangeCb = onChange;      // 3D 에서 조작해도 측정값이 갱신되도록
     LabUI.bindSlider(root, 'current', state, 'current', (v) => `${v.toFixed(1)} A`, onChange);
     LabUI.bindOpts(root, 'dir', state, 'dir', onChange);
 

@@ -15,6 +15,7 @@ const CapacitorScene = (() => {
   const R_DIS = 3000;            // 방전 경로 저항 (저항 + LED, Ω)
   const EPS0 = 8.854e-12;        // 진공 유전율 (F/m)
   const WY = 0.32;               // 도선 높이
+  const GAP_U = 0.45;            // 내부 모드 표시 배율 — 간격 1 mm 를 화면에서 0.45 만큼 벌린다
 
   let scene, camera;
   let batteryG, switchG, lever, capG, plateTexA, plateTexB, ledG, ledDome, ledLbl;
@@ -95,6 +96,8 @@ const CapacitorScene = (() => {
     buildWires();
     buildInside();
     buildPlaceholders();
+    buildSteppers();
+    setupPointer(canvas);
 
     // 교과서 그림 액자 (배경 소품)
     LabUI.addPoster(scene, '../assets/thumbs/capacitor.jpg', { x: -8, y: 0, z: 5, ry: 0.3 });
@@ -142,14 +145,7 @@ const CapacitorScene = (() => {
     lbl.position.set(-3.5, 1.3, 1.2);
     lbl.billboardMode = B().Mesh.BILLBOARDMODE_Y;
     const t = new (B().DynamicTexture)('cpBattLT', { width: 256, height: 76 }, scene, true);
-    const c = t.getContext();
-    c.clearRect(0, 0, 256, 76);
-    c.font = 'bold 44px sans-serif'; c.textAlign = 'center'; c.textBaseline = 'middle';
-    c.fillStyle = '#d0453a'; c.fillText('+', 218, 40);
-    c.fillStyle = '#2f6ad0'; c.fillText('−', 38, 40);
-    c.fillStyle = '#3c4756'; c.font = 'bold 30px sans-serif';
-    c.fillText('3 V', 128, 40);
-    t.hasAlpha = true; t.update();
+    t.hasAlpha = true;
     const m = new (B().StandardMaterial)('cpBattLM', scene);
     m.diffuseTexture = t; m.opacityTexture = t; m.emissiveTexture = t;
     m.emissiveColor = new (B().Color3)(1, 1, 1);
@@ -157,6 +153,21 @@ const CapacitorScene = (() => {
     lbl.material = m;
     lbl.parent = batteryG;
     batteryG._lblTex = t;
+    drawBattLabel();
+  }
+
+  /** 전지 라벨 — 3D 에서 전지를 바꿔 끼우면 전압 표시도 함께 바뀐다 */
+  function drawBattLabel() {
+    const t = batteryG._lblTex;
+    const c = t.getContext();
+    c.clearRect(0, 0, 256, 76);
+    c.textAlign = 'center'; c.textBaseline = 'middle';
+    c.font = 'bold 44px sans-serif';
+    c.fillStyle = '#d0453a'; c.fillText('+', 218, 40);
+    c.fillStyle = '#2f6ad0'; c.fillText('−', 38, 40);
+    c.fillStyle = '#3c4756'; c.font = 'bold 30px sans-serif';
+    c.fillText(`${state.volt.toFixed(1)} V`, 128, 40);
+    t.update();
   }
 
   /** 칼날 스위치 — 공통 단자에서 A(충전)/B(방전) 접점으로 젖히는 레버 */
@@ -308,11 +319,13 @@ const CapacitorScene = (() => {
     body.parent = ledG;
     ledG._domeMat = dm; ledG._bodyMat = bm;
     // 다리 2개 — 긴 쪽이 (+) 애노드
+    ledG._legs = {};
     [[0.14, 0.8, 'A'], [-0.14, 0.62, 'K']].forEach(([dz, h, n2]) => {
       const leg = B().MeshBuilder.CreateCylinder('cpLedLeg' + n2, { height: h, diameter: 0.05 }, scene);
       leg.position.set(3.5, 0.81 - h / 2 + 0.0, 0.2 + dz);
       leg.material = mat('cpLedLegM' + n2, '#8a93a6', '#dfe4ee', 96);
       leg.parent = ledG;
+      ledG._legs[n2] = leg;
     });
     // 극성 라벨 (방향에 따라 갱신)
     ledLbl = B().MeshBuilder.CreatePlane('cpLedL', { width: 1.7, height: 0.45 }, scene);
@@ -326,6 +339,13 @@ const CapacitorScene = (() => {
     m.backFaceCulling = false;
     ledLbl.material = m;
     ledLbl.parent = ledG;
+  }
+
+  /** 끼운 방향 — 긴 다리(＋ 애노드)가 어느 쪽에 오는지가 바뀐다 */
+  function layoutLedLegs() {
+    if (!ledG._legs) return;
+    ledG._legs.A.position.z = 0.2 + 0.14 * state.ledDir;
+    ledG._legs.K.position.z = 0.2 - 0.14 * state.ledDir;
   }
 
   function drawLedLabel() {
@@ -489,7 +509,7 @@ const CapacitorScene = (() => {
   }
 
   function layoutInside() {
-    const gapU = 0.35 + (state.gapMm / 10) * 1.6;             // 표시 간격
+    const gapU = GAP_U * state.gapMm;                         // 표시 간격 — d 에 비례해 벌어진다
     const sizeU = 0.6 + Math.sqrt(state.areaCm2 / 200) * 0.7; // 표시 크기 배율
     inPlateA.position.z = -gapU / 2; insideG._faceA.position.z = -gapU / 2 + 0.08;
     inPlateB.position.z = gapU / 2;  insideG._faceB.position.z = gapU / 2 - 0.08;
@@ -519,6 +539,7 @@ const CapacitorScene = (() => {
     };
     draw(inChargeTexA, +1);
     draw(inChargeTexB, -1);
+    layoutSteppers();
   }
 
   /* ── 배치 자리 ──────────────────────────────── */
@@ -565,6 +586,207 @@ const CapacitorScene = (() => {
   }
   function slotName(id) { return slots[id].name; }
 
+  /* ══ 화면에서 직접 조작 ═══════════════════════
+     실제 실험에서 손으로 하는 동작을 그대로 옮긴다.
+     · 칼날 스위치의 손잡이를 «잡아 젖혀» A(충전) · 열림 · B(방전) 로 옮긴다
+     · LED 를 누르면 끼운 방향이 뒤집힌다 (긴 다리가 반대쪽으로 간다)
+     · 전지·축전기 위의 ＋ / － 로 전지와 축전기를 «바꿔 끼운다»
+     · 내부 모드에서는 판을 앞뒤로 끌어 간격 d 를, ＋ / － 로 넓이 A 를 바꾼다   */
+  const VOLTS = [1.5, 3.0, 4.5];      // 아래 조작 막대와 같은 값·같은 차례
+  const CAPS = [470, 1000, 2200];
+  let stepVolt = null, stepCap = null, stepArea = null;
+  let drag = null;                    // 'sw' | 'A' | 'B' — 지금 끌고 있는 것
+  let dragY = 0;                      // 판을 잡은 높이 — 이 수평면 위에서 커서를 따라간다
+  let dragOff = 0;                    // 잡은 순간의 어긋남 보정 (판이 튀지 않게)
+  let onChangeCb = null;
+
+  function buildSteppers() {
+    stepVolt = LabUI.makeStepper(scene, 'Volt');
+    stepCap = LabUI.makeStepper(scene, 'Cap');
+    stepArea = LabUI.makeStepper(scene, 'Area');
+  }
+
+  /** ＋ / － 단추 자리 — 부품과 겹치지 않도록 «위쪽»에 띄운다 */
+  function layoutSteppers() {
+    if (!stepVolt) return;
+    const circ = state.mode === 'circuit';
+    const on = allPlaced();
+    stepVolt.place(-3.5, 2.15, 1.2, 0.8);      // 전지 위
+    // 축전기 용량 라벨의 «양옆» — 바로 위(y 2.85)에 두면 뒤쪽 저항의
+    // 'R = 2.2 kΩ' 글씨를 화면에서 가린다 (기본 시점에서 2/3 가림)
+    stepCap.place(0, 2.0, -0.55, 1.6);
+    stepArea.place(0, 4.6, 0.6, 0.9);          // 내부 모드 — 판 위
+    stepVolt.setEnabled(circ && on);
+    stepCap.setEnabled(circ && on);
+    stepArea.setEnabled(!circ && on);
+  }
+
+  function hint(text, ok) {
+    if (typeof Lab !== 'undefined' && Lab.showHint) Lab.showHint(text, !!ok);
+  }
+
+  /** 3D 에서 값을 바꾸면 아래 조작 막대의 표시도 함께 맞춘다 */
+  function syncOpt(key, v) {
+    document.querySelectorAll(`[data-${key}]`).forEach((b) => {
+      b.classList.toggle('on', b.getAttribute('data-' + key) === String(v));
+    });
+  }
+  function syncSlider(id, v, text) {
+    const el = document.querySelector('#' + id);
+    const out = document.querySelector('#' + id + 'Out');
+    if (el) el.value = v;
+    if (out) out.textContent = text;
+  }
+
+  /** 전지를 바꿔 끼운다 (1.5 · 3.0 · 4.5 V) */
+  function bumpVolt(d) {
+    const i = Math.max(0, Math.min(VOLTS.length - 1, VOLTS.indexOf(state.volt) + d));
+    if (VOLTS[i] === state.volt) return;
+    state.volt = VOLTS[i];
+    syncOpt('volt', state.volt);
+    layout();
+    if (onChangeCb) onChangeCb();
+    hint(`전지를 ${state.volt.toFixed(1)} V 로 바꿔 끼웠습니다.`, true);
+  }
+
+  /** 축전기를 바꿔 끼운다 (470 · 1000 · 2200 μF) */
+  function bumpCap(d) {
+    const i = Math.max(0, Math.min(CAPS.length - 1, CAPS.indexOf(state.cap) + d));
+    if (CAPS[i] === state.cap) return;
+    state.cap = CAPS[i];
+    syncOpt('cap', state.cap);
+    drawCapLabel();
+    if (onChangeCb) onChangeCb();
+    hint(`축전기를 ${state.cap} μF 로 바꿔 끼웠습니다 — τ = RC 가 달라집니다.`, true);
+  }
+
+  /** 내부 모드 — 판의 넓이 A (50 ~ 200 cm², 아래 슬라이더와 같은 범위) */
+  function bumpArea(d) {
+    const v = Math.max(50, Math.min(200, state.areaCm2 + d * 10));
+    if (v === state.areaCm2) return;
+    state.areaCm2 = v;
+    syncSlider('areaCtl', v, `${v} cm²`);
+    layoutInside();
+    if (onChangeCb) onChangeCb();
+  }
+
+  /** LED 를 눌러 뒤집어 끼운다 */
+  function flipLed() {
+    state.ledDir = -state.ledDir;
+    syncOpt('ledDir', state.ledDir);
+    layout();
+    if (onChangeCb) onChangeCb();
+    hint(state.ledDir > 0
+      ? 'LED 를 바로 끼웠습니다 — 긴 다리(＋)가 축전기 쪽입니다.'
+      : 'LED 를 거꾸로 끼웠습니다 — 다이오드는 한 방향으로만 전류를 흘립니다.',
+    state.ledDir > 0);
+  }
+
+  /** 젖힌 자리 → 접점 (A 는 왼쪽 −x, B 는 오른쪽 +x, 가운데는 열림) */
+  function swFromX(x) { return x < -0.32 ? 'chg' : x > 0.32 ? 'dis' : 'open'; }
+
+  function setSwitch(v) {
+    if (state.sw === v) return;
+    state.sw = v;
+    syncOpt('sw', v);
+    layout();
+    if (onChangeCb) onChangeCb();
+    hint({
+      chg: 'A(충전) 쪽으로 젖혔습니다 — 전지가 축전기를 채웁니다.',
+      open: '스위치를 열었습니다 — 전하가 판에 그대로 남습니다.',
+      dis: 'B(방전) 쪽으로 젖혔습니다 — 축전기가 LED 를 켭니다.',
+    }[v], v !== 'open');
+  }
+
+  /** 화면 위 한 점을 높이 y 인 수평면 위의 좌표로 바꾼다 */
+  function pointerOnPlane(y) {
+    const ray = scene.createPickingRay(scene.pointerX, scene.pointerY, null, camera);
+    const plane = B().Plane.FromPositionAndNormal(
+      new (B().Vector3)(0, y, 0), new (B().Vector3)(0, 1, 0));
+    const d = ray.intersectsPlane(plane);
+    if (d === null) return null;
+    return ray.origin.add(ray.direction.scale(d));
+  }
+
+  /**
+   * 커서가 가리키는 곳을 «판 사이 간격 몇 mm» 로 읽는다 (눈금 적용 전).
+   * 판은 위아래로 길어서(3 단위가 넘는다) 잡은 높이에 따라 광선이 닿는 자리가
+   * 크게 달라진다. 그래서 «잡은 그 지점을 지나는» 수평면(dragY)에서 재야
+   * 판이 커서를 그대로 따라온다.
+   */
+  function gapFromPointer(which) {
+    const pt = pointerOnPlane(dragY);
+    if (!pt) return null;
+    const lz = pt.z - insideG.position.z;         // 판 뭉치의 가운데에서 잰 거리
+    const half = which === 'A' ? -lz : lz;        // 잡은 판이 가운데에서 떨어진 거리
+    return half * 2 / GAP_U;                      // mm
+  }
+
+  /** 잡고 있는 판(A/B)이 커서를 따라오게 해 간격 d 를 정한다 (2 ~ 10 mm) */
+  function dragGap(which) {
+    const raw = gapFromPointer(which);
+    if (raw === null) return;
+    const mm = Math.round((raw + dragOff) * 2) / 2;      // 0.5 mm 눈금
+    const v = Math.max(2, Math.min(10, mm));
+    if (v === state.gapMm) return;
+    state.gapMm = v;
+    syncSlider('gapCtl', v, `${v.toFixed(1)} mm`);
+    layoutInside();
+    if (onChangeCb) onChangeCb();
+  }
+
+  function setupPointer(canvas) {
+    scene.onPointerObservable.add((pi) => {
+      const T = B().PointerEventTypes;
+      if (pi.type === T.POINTERDOWN) {
+        if (!allPlaced()) return;                 // 회로를 다 꾸며야 손댈 수 있다
+        if (pi.event && pi.event.button !== 0) return;
+        const m = pi.pickInfo && pi.pickInfo.pickedMesh;
+        if (!m) return;
+        const nm = m.name;
+        if (nm === 'btnAddVolt') { bumpVolt(+1); return; }
+        if (nm === 'btnSubVolt') { bumpVolt(-1); return; }
+        if (nm === 'btnAddCap') { bumpCap(+1); return; }
+        if (nm === 'btnSubCap') { bumpCap(-1); return; }
+        if (nm === 'btnAddArea') { bumpArea(+1); return; }
+        if (nm === 'btnSubArea') { bumpArea(-1); return; }
+
+        if (state.mode === 'circuit') {
+          if (/^cpLed/.test(nm)) { flipLed(); return; }      // LED 를 눌러 뒤집는다
+          if (/^cpSw/.test(nm)) {                            // 칼날 스위치를 잡는다
+            const pt = pointerOnPlane(0.6);
+            if (!pt) return;
+            drag = 'sw';
+            camera.detachControl();
+            setSwitch(swFromX(pt.x));
+          }
+          return;
+        }
+        const g = /^cpIn[PF]([AB])$/.exec(nm);               // 내부 모드 — 판을 잡는다
+        if (g) {
+          const p = pi.pickInfo.pickedPoint;
+          dragY = p ? p.y : insideG.position.y;    // 잡은 «그 높이»에서 끈다
+          dragOff = 0;
+          const raw = gapFromPointer(g[1]);
+          if (raw === null) return;
+          dragOff = state.gapMm - raw;             // 잡는 순간에는 지금 간격 그대로 (튀지 않게)
+          drag = g[1];
+          camera.detachControl();
+        }
+      } else if (pi.type === T.POINTERMOVE && drag) {
+        if (drag === 'sw') {
+          const pt = pointerOnPlane(0.6);
+          if (pt) setSwitch(swFromX(pt.x));
+        } else {
+          dragGap(drag);
+        }
+      } else if (pi.type === T.POINTERUP && drag) {
+        drag = null;
+        camera.attachControl(canvas, true);
+      }
+    });
+  }
+
   /* ══ 진행 ═══════════════════════════════════ */
   function reset() {
     sim = { t: 0, V: 0, I: 0, hist: [{ t: 0, V: 0, I: 0 }], phaseT: 0 };
@@ -585,7 +807,8 @@ const CapacitorScene = (() => {
     resistorG.setEnabled(circ && all);
     wiresG.setEnabled(circ && all);
     insideG.setEnabled(!circ);
-    if (!circ) { layoutInside(); return; }
+    if (!circ) { layoutInside(); return; }   // 내부 모드의 ＋/－ 자리는 layoutInside 에서 잡는다
+    layoutSteppers();
     if (!all) return;
 
     // 레버 위치: A(충전, 왼쪽) / 열림 / B(방전, 오른쪽)
@@ -593,7 +816,9 @@ const CapacitorScene = (() => {
     lever.rotation.x = state.sw === 'open' ? -0.55 : 0;
     drawPlateCharges();
     drawCapLabel();
+    drawBattLabel();
     drawLedLabel();
+    layoutLedLegs();
   }
 
   function tick(dt) {
@@ -635,14 +860,17 @@ const CapacitorScene = (() => {
 
   function resetCamera() {
     if (!camera) return;
-    camera.alpha = -Math.PI / 2;
-    camera.beta = state.mode === 'circuit' ? 0.72 : 1.25;
-    camera.radius = 13.5;
-    camera.setTarget(new (B().Vector3)(0, state.mode === 'circuit' ? 0.6 : 1.9, 0.4));
+    const circ = state.mode === 'circuit';
+    // setTarget 은 지금 자리에서 각도를 다시 계산하므로 «바라볼 곳부터» 정한다
+    camera.setTarget(new (B().Vector3)(0, circ ? 0.6 : 1.9, 0.4));
+    // 내부 모드는 비스듬히 본다 — 두 판 사이의 간격이 잘 보이고, 판을 앞뒤로 끌기도 쉽다
+    camera.alpha = circ ? -Math.PI / 2 : -Math.PI / 2 + 0.85;
+    camera.beta = circ ? 0.72 : 1.15;
+    camera.radius = circ ? 13.5 : 11.5;
   }
 
   /* ══ 컨트롤 ═════════════════════════════════ */
-  const guide = '스위치를 A(충전)로 젖혔다가 B(방전)로 — 축전기에 모인 전하가 LED 를 켭니다. LED 를 거꾸로 끼우면 어떻게 될까요?';
+  const guide = '칼날 스위치의 손잡이를 잡아 A(충전) 쪽으로 젖혔다가 B(방전) 쪽으로 넘겨 보세요 — 축전기에 모인 전하가 LED 를 켭니다. LED 를 눌러 거꾸로 끼우면 어떻게 될까요?';
   const prepGuide = '점선 자리에 전지·스위치·축전기·LED 를 끌어다 놓으세요. 모두 놓으면 도선이 연결되어 회로가 완성됩니다.';
 
   function controlsHTML() {
@@ -653,6 +881,14 @@ const CapacitorScene = (() => {
     if (state.mode === 'circuit') {
       return `
         ${modeBtns}
+        <div class="control">
+          <div class="clabel">직접<br>조작</div>
+          <div class="cbody"><p class="hands-on">
+            칼날 스위치의 <b>손잡이를 잡아 좌우로 젖히면</b> A(충전) · 열림 · B(방전) 로 옮겨집니다.
+            <b>LED 를 누르면</b> 거꾸로 끼워지고, 전지·축전기 위의 <b>＋ · －</b> 로
+            전지와 축전기를 바꿔 낍니다.
+          </p></div>
+        </div>
         ${LabUI.opts('전지 전압', 'volt', [
           { v: 1.5, t: '1.5 V' }, { v: 3.0, t: '3.0 V' }, { v: 4.5, t: '4.5 V' },
         ], state.volt, 1)}
@@ -672,6 +908,13 @@ const CapacitorScene = (() => {
     }
     return `
       ${modeBtns}
+      <div class="control">
+        <div class="clabel">직접<br>조작</div>
+        <div class="cbody"><p class="hands-on">
+          <b>판을 앞뒤로 끌면</b> 간격 <i>d</i> 가 좁아지거나 벌어지고,
+          판 위의 <b>＋ · －</b> 로 넓이 <i>A</i> 를 바꿉니다.
+        </p></div>
+      </div>
       ${LabUI.slider('areaCtl', '판의 넓이 <i>A</i>',
         { min: 50, max: 200, step: 10, value: state.areaCm2, fmt: (v) => `${v} cm²` })}
       ${LabUI.slider('gapCtl', '판 간격 <i>d</i>',
@@ -686,6 +929,7 @@ const CapacitorScene = (() => {
   }
 
   function bindControls(root, onChange) {
+    onChangeCb = onChange;      // 3D 에서 조작해도 측정값이 갱신되도록
     LabUI.bindOpts(root, 'mode', state, 'mode', () => {
       resetCamera();
       root.innerHTML = controlsHTML();

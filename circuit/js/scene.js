@@ -11,9 +11,12 @@ const CircuitScene = (() => {
 
   const TABLE_Y = 0;
 
-  let scene, camera;
+  let scene, camera, canvasRef;
   let battery, resA, resB, ammeter, voltmeter, wires, switchG;
   let placed = {};
+
+  // 칼날 스위치가 놓인 자리 (손잡이를 끌 때도 쓴다)
+  const SW_X = -5.5, SW_Z = 3.6;
 
   const state = {
     emf: 6,          // 전지 전압 (V)
@@ -65,6 +68,7 @@ const CircuitScene = (() => {
 
   /* ══ 장면 ═══════════════════════════════════ */
   function create(engine, canvas) {
+    canvasRef = canvas;
     scene = new (B().Scene)(engine);
     scene.clearColor = B().Color4.FromHexString('#c9dff2ff');
 
@@ -92,6 +96,9 @@ const CircuitScene = (() => {
     buildMeters();
     buildWires();
     buildPlaceholders();
+    buildModeBoard();
+    buildSteppers();
+    setupPointer(canvas);
 
     // 교과서 그림 액자 (배경 소품)
     LabUI.addPoster(scene, '../assets/thumbs/circuit.jpg', { x: -8, y: 0, z: 5, ry: 0.3 });
@@ -134,6 +141,21 @@ const CircuitScene = (() => {
       cap.material = mat('capMat' + i, '#9aa4b0');
       cap.parent = battery;
     });
+
+    // 전지 이름표 — 화면에서 ＋ / － 로 바꾼 전압을 바로 읽는다 (update 에서 다시 그린다)
+    const label = B().MeshBuilder.CreatePlane('batLab', { width: 3.2, height: 1.15 }, scene);
+    label.position.set(0, TABLE_Y + 2.05, 3.6);
+    label.billboardMode = B().Mesh.BILLBOARDMODE_Y;
+    const tex = new (B().DynamicTexture)('batLabTex', { width: 300, height: 110 }, scene, true);
+    tex.hasAlpha = true;
+    battery._tex = tex;
+    const lm = new (B().StandardMaterial)('batLabMat', scene);
+    lm.diffuseTexture = tex; lm.opacityTexture = tex;
+    lm.emissiveColor = new (B().Color3)(0.9, 0.9, 0.9);
+    lm.specularColor = new (B().Color3)(0, 0, 0);
+    lm.backFaceCulling = false;
+    label.material = lm;
+    label.parent = battery;
   }
 
   /** 저항값 → 4색띠 (갈1 빨2 주3 노4 초5 파6 보7 회8 흰9 검0, 배수띠 + 금색 오차띠) */
@@ -174,7 +196,7 @@ const CircuitScene = (() => {
 
     // 저항 이름표 — 받침 앞쪽에 눕혀 «A · 10 Ω» 처럼 표시 (update 에서 다시 그린다)
     const label = B().MeshBuilder.CreatePlane('resLab' + name, { width: 3.2, height: 1.2 }, scene);
-    label.position.set(x, TABLE_Y + 1.95, -2.6);
+    label.position.set(x, TABLE_Y + 2.75, -2.6);   // ＋ / － 단추 자리를 비워 두려 조금 올렸다
     label.billboardMode = B().Mesh.BILLBOARDMODE_Y;
     const tex = new (B().DynamicTexture)('resLabTex' + name, { width: 300, height: 110 }, scene, true);
     g._tex = tex;
@@ -269,7 +291,7 @@ const CircuitScene = (() => {
     switchG = new (B().TransformNode)('switchGroup', scene);
 
     // 칼날 스위치 — 나무 받침 · 두 접점 기둥 · 젖혀지는 칼날
-    const SW_X = -5.5, SW_Z = 3.6;          // 전지 ↔ 전류계 사이 도선 위
+    // (SW_X, SW_Z 는 전지 ↔ 전류계 사이 도선 위, 모듈 위쪽에 두었다)
     const base = B().MeshBuilder.CreateBox('swBase', { width: 3.0, height: 0.36, depth: 1.6 }, scene);
     base.position.set(SW_X, TABLE_Y + 0.18, SW_Z);
     base.material = mat('swBaseMat', '#8a6a45', '#d8c0a0', 32);
@@ -452,11 +474,263 @@ const CircuitScene = (() => {
     });
   }
 
+  /* ══ 화면에서 직접 조작 ═══════════════════════
+     · 칼날 스위치의 손잡이를 잡고 내리면 닫히고 올리면 열린다
+     · 전지 · 저항 위의 ＋ / － 로 전압과 저항값을 바꾼다
+     · 가운데 연결판의 플러그를 옮겨 꽂아 직렬 · 병렬을 바꾼다          */
+
+  let onChangeCb = null;
+  let stepE = null, stepA = null, stepB = null;
+  let modeBoard = null, modePlug = null, modeTagS = null, modeTagP = null;
+  let plugDrag = null, swDrag = null;
+
+  const MODE_Z = 1.1;                       // 연결판이 놓인 자리 (전지와 계기 사이)
+  const SOCK_X = { series: -1.7, parallel: 1.7 };
+
+  /** 구멍 이름표 — 판 위에 «눕혀» 붙여 다른 부품과 겹쳐 보이지 않게 한다 */
+  function makeTag(name, x, z) {
+    const pl = B().MeshBuilder.CreateGround(name, { width: 2.3, height: 0.95 }, scene);
+    pl.position.set(x, TABLE_Y + 0.36, z);
+    const tex = new (B().DynamicTexture)(name + 'T', { width: 240, height: 100 }, scene, true);
+    tex.hasAlpha = true;
+    const m = new (B().StandardMaterial)(name + 'M', scene);
+    m.diffuseTexture = tex; m.opacityTexture = tex; m.emissiveTexture = tex;
+    m.emissiveColor = new (B().Color3)(1, 1, 1);
+    m.specularColor = new (B().Color3)(0, 0, 0);
+    m.backFaceCulling = false;
+    pl.material = m;
+    pl._tex = tex;
+    return pl;
+  }
+
+  /** 지금 고른 쪽만 파랗게 칠한다 */
+  function paintTag(pl, text, on) {
+    if (!pl || !pl._tex) return;
+    const ctx = pl._tex.getContext();
+    ctx.clearRect(0, 0, 240, 100);
+    ctx.fillStyle = on ? '#2f6ad0' : '#5a4632';
+    ctx.fillRect(6, 12, 228, 76);
+    ctx.fillStyle = on ? '#ffffff' : '#d8c0a0';
+    ctx.font = 'bold 52px "Noto Sans KR", sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(text, 120, 52);
+    pl._tex.update();
+  }
+
+  /** 연결판 — 실험판의 «직렬 구멍 · 병렬 구멍» 과 옮겨 꽂는 플러그 */
+  function buildModeBoard() {
+    modeBoard = new (B().TransformNode)('modeBoard', scene);
+
+    const base = B().MeshBuilder.CreateBox('modeBase', { width: 6.4, height: 0.34, depth: 2.0 }, scene);
+    base.position.set(0, TABLE_Y + 0.17, MODE_Z);
+    base.material = mat('modeBaseMat', '#8a6a45', '#d8c0a0', 32);
+    base.parent = modeBoard;
+
+    const sm = mat('modeSockMat', '#c8a020', '#fff0c0', 96);
+    [['S', SOCK_X.series], ['P', SOCK_X.parallel]].forEach(([k, x]) => {
+      const s = B().MeshBuilder.CreateCylinder('modeSock' + k, { height: 0.5, diameter: 0.66 }, scene);
+      s.position.set(x, TABLE_Y + 0.55, MODE_Z);
+      s.material = sm;
+      s.parent = modeBoard;
+    });
+
+    // 구멍 이름표는 판 앞쪽에 눕혀 붙인다 (플러그를 가리지 않는다)
+    modeTagS = makeTag('modeTagS', SOCK_X.series, MODE_Z - 0.62);
+    modeTagP = makeTag('modeTagP', SOCK_X.parallel, MODE_Z - 0.62);
+    modeTagS.parent = modeBoard;
+    modeTagP.parent = modeBoard;
+
+    // 옮겨 꽂는 플러그 (연결 도선의 끝)
+    modePlug = new (B().TransformNode)('modePlugG', scene);
+    const pin = B().MeshBuilder.CreateCylinder('modePlugPin', { height: 1.0, diameter: 0.3 }, scene);
+    pin.position.set(0, TABLE_Y + 1.05, 0);
+    pin.material = mat('modePlugPinMat', '#c8ccd2', '#ffffff', 110);
+    pin.parent = modePlug;
+    const body = B().MeshBuilder.CreateCylinder('modePlugBody', { height: 0.9, diameter: 0.68 }, scene);
+    body.position.set(0, TABLE_Y + 1.95, 0);
+    body.material = mat('modePlugBodyMat', '#d0453a', '#ffb0a0', 64);
+    body.parent = modePlug;
+    const top = B().MeshBuilder.CreateSphere('modePlugTop', { diameter: 0.52 }, scene);
+    top.position.set(0, TABLE_Y + 2.42, 0);
+    top.material = mat('modePlugTopMat', '#e8663f', '#ffd0c0', 64);
+    top.parent = modePlug;
+    modePlug.position.set(SOCK_X[state.mode], 0, MODE_Z);
+    modePlug.parent = modeBoard;
+  }
+
+  /** 부품 위에 띄우는 ＋ / － 단추 */
+  function buildSteppers() {
+    stepE = LabUI.makeStepper(scene, 'Emf');
+    stepA = LabUI.makeStepper(scene, 'RA');
+    stepB = LabUI.makeStepper(scene, 'RB');
+  }
+
+  /** 단추와 연결판의 자리를 다시 잡는다 (update 에서 매번 부른다) */
+  function layoutHands() {
+    const on = allPlaced();
+    if (stepE) { stepE.place(0, TABLE_Y + 3.15, 3.6, 1.05); stepE.setEnabled(on); }
+    // 저항 몸통·이름표를 가리지 않도록 넉넉히 띄운다
+    // 이름표(폭 3.2) 바깥에 놓아 글씨와 저항 몸통을 모두 비껴간다
+    if (stepA) { stepA.place(-3.4, TABLE_Y + 2.75, -2.6, 2.3); stepA.setEnabled(on); }
+    if (stepB) { stepB.place(3.4, TABLE_Y + 2.75, -2.6, 2.3); stepB.setEnabled(on); }
+    if (modeBoard) {
+      modeBoard.setEnabled(on);
+      if (!plugDrag) modePlug.position.x = SOCK_X[state.mode];
+      paintTag(modeTagS, '직렬', state.mode === 'series');
+      paintTag(modeTagP, '병렬', state.mode === 'parallel');
+    }
+  }
+
+  /** 3D 에서 값을 바꾼 뒤 — 장면과 측정값·회로도를 함께 갱신한다 */
+  function applyChange() {
+    if (onChangeCb) onChangeCb();     // 껍데기가 update() 까지 불러 준다
+    else update();
+    syncPanel();
+  }
+
+  /** 아래 조작 막대의 슬라이더·단추를 3D 에서 바꾼 값에 맞춘다 */
+  function syncPanel() {
+    const put = (id, val, txt) => {
+      const el = document.querySelector('#' + id);
+      const out = document.querySelector('#' + id + 'Out');
+      if (el) el.value = val;
+      if (out) out.textContent = txt;
+    };
+    put('emf', state.emf, `${state.emf.toFixed(1)} V`);
+    put('rA', state.rA, `${state.rA} Ω`);
+    put('rB', state.rB, `${state.rB} Ω`);
+    const sw = document.querySelector('#swBtn');
+    if (sw) {
+      sw.textContent = state.closed ? '닫힘' : '열림';
+      sw.classList.toggle('run', state.closed);
+      sw.classList.toggle('off', !state.closed);
+    }
+    document.querySelectorAll('[data-mode]').forEach((b) => {
+      b.classList.toggle('on', b.getAttribute('data-mode') === state.mode);
+    });
+  }
+
+  /** 전지 전압을 건전지 한 개(1.5 V) 만큼 올리거나 내린다 */
+  function bumpEmf(d) {
+    state.emf = Math.max(1.5, Math.min(12, +(state.emf + d * 1.5).toFixed(1)));
+    applyChange();
+  }
+
+  /** 저항값을 5 Ω 씩 바꾼다 (1 Ω 단위 미세 조정은 아래 슬라이더로) */
+  function bumpRes(which, d) {
+    const key = which === 'A' ? 'rA' : 'rB';
+    state[key] = Math.max(5, Math.min(50, Math.round(state[key] + d * 5)));
+    applyChange();
+  }
+
+  function setMode(m) {
+    state.mode = m;
+    applyChange();
+  }
+
+  /** 화면 위 한 점을 주어진 평면 위의 세계 좌표로 바꾼다 */
+  function planePoint(origin, normal) {
+    const ray = scene.createPickingRay(scene.pointerX, scene.pointerY, null, camera);
+    const plane = B().Plane.FromPositionAndNormal(origin, normal);
+    const d = ray.intersectsPlane(plane);
+    if (d === null || d < 0) return null;   // 옆에서 보아 면과 나란하면 무시한다
+    return ray.origin.add(ray.direction.scale(d));
+  }
+
+  /** 칼날이 도는 축을 기준으로, 손끝이 가리키는 각 (0 = 닫힘, 0.62 = 열림) */
+  function bladeAngle() {
+    const pivot = new (B().Vector3)(SW_X - 1.05, TABLE_Y + 0.9, SW_Z);
+    const pt = planePoint(pivot, new (B().Vector3)(0, 0, 1));
+    if (!pt) return null;
+    const a = Math.atan2(pt.y - pivot.y, pt.x - pivot.x);
+    return Math.max(0, Math.min(0.62, a));
+  }
+
+  function setupPointer(canvas) {
+    scene.onPointerObservable.add((pi) => {
+      const T = B().PointerEventTypes;
+      const m = pi.pickInfo && pi.pickInfo.pickedMesh;
+      const nm = m ? m.name : '';
+
+      if (pi.type === T.POINTERDOWN) {
+        if (!allPlaced()) return;             // 회로를 다 꾸미기 전에는 만지지 못한다
+        if (nm === 'btnAddEmf') { bumpEmf(+1); return; }
+        if (nm === 'btnSubEmf') { bumpEmf(-1); return; }
+        if (nm === 'btnAddRA') { bumpRes('A', +1); return; }
+        if (nm === 'btnSubRA') { bumpRes('A', -1); return; }
+        if (nm === 'btnAddRB') { bumpRes('B', +1); return; }
+        if (nm === 'btnSubRB') { bumpRes('B', -1); return; }
+        if (nm === 'modeSockS' || nm === 'modeTagS') { setMode('series'); return; }
+        if (nm === 'modeSockP' || nm === 'modeTagP') { setMode('parallel'); return; }
+        if (nm.indexOf('modePlug') === 0) {   // 플러그를 뽑아 든다
+          plugDrag = { want: state.mode };
+          camera.detachControl();
+          return;
+        }
+        if (nm === 'swKnob' || nm === 'swBlade') {
+          const a = bladeAngle();
+          swDrag = {
+            moved: false,
+            a0: a === null ? (state.closed ? 0 : 0.62) : a,
+            y0: scene.pointerY,          // 옆에서 볼 때 쓰는 화면 세로 기준
+          };
+          camera.detachControl();
+        }
+        return;
+      }
+
+      if (pi.type === T.POINTERMOVE) {
+        if (plugDrag) {
+          const pt = planePoint(new (B().Vector3)(0, TABLE_Y + 1.95, 0), new (B().Vector3)(0, 1, 0));
+          if (!pt) return;
+          modePlug.position.x = Math.max(-2.9, Math.min(2.9, pt.x));
+          // 어느 구멍에 꽂힐지 이름표로 미리 보여 준다
+          const want = modePlug.position.x >= 0 ? 'parallel' : 'series';
+          if (want !== plugDrag.want) {
+            plugDrag.want = want;
+            paintTag(modeTagS, '직렬', want === 'series');
+            paintTag(modeTagP, '병렬', want === 'parallel');
+          }
+        } else if (swDrag) {
+          // 칼날이 도는 면(z = SW_Z)을 거의 옆에서 보면 평면 좌표를 얻지 못한다.
+          // 그때는 화면에서 손끝이 «올라간 만큼» 칼날을 든다 (어느 방향에서나 통한다).
+          let a = bladeAngle();
+          if (a === null) {
+            a = Math.max(0, Math.min(0.62, swDrag.a0 + (swDrag.y0 - scene.pointerY) * 0.006));
+          }
+          if (Math.abs(a - swDrag.a0) > 0.05) swDrag.moved = true;
+          const want = a < 0.31;              // 접점에 닿을 만큼 내리면 회로가 이어진다
+          if (want !== state.closed) { state.closed = want; applyChange(); }
+          switchG._lever.rotation.z = a;      // 칼날은 손끝을 그대로 따라온다
+        }
+        return;
+      }
+
+      if (pi.type === T.POINTERUP) {
+        if (plugDrag) {
+          const want = plugDrag.want;
+          plugDrag = null;
+          camera.attachControl(canvas, true);
+          setMode(want);                      // 가까운 구멍에 꽂힌다
+        } else if (swDrag) {
+          const moved = swDrag.moved;
+          swDrag = null;
+          camera.attachControl(canvas, true);
+          if (!moved) state.closed = !state.closed;   // 손잡이를 툭 누르면 여닫힌다
+          applyChange();
+        }
+      }
+    });
+  }
+
   /* ══ 도구 배치 ═══════════════════════════════ */
   function resetTools() {
     placed = {};
     tools.forEach((t) => { placed[t.id] = false; });
     state.closed = false;
+    // 끌던 도중에 «다시 배치» 를 눌러도 카메라 조작이 잠긴 채로 남지 않게 한다
+    if ((plugDrag || swDrag) && camera && canvasRef) camera.attachControl(canvasRef, true);
+    plugDrag = null; swDrag = null;
     applyPlacement();
   }
   function placeTool(id) { placed[id] = true; applyPlacement(); }
@@ -498,6 +772,18 @@ const CircuitScene = (() => {
     tex.update();
   }
 
+  /** 전지 이름표에 지금 전압을 적는다 */
+  function paintBattery(v) {
+    if (!battery || !battery._tex) return;
+    const ctx = battery._tex.getContext();
+    ctx.clearRect(0, 0, 300, 110);
+    ctx.fillStyle = '#26313f';
+    ctx.font = 'bold 48px "Noto Sans KR", sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(`전지 ${v.toFixed(1)} V`, 150, 58);
+    battery._tex.update();
+  }
+
   /** 전류가 도선을 따라 흐르는 모습 */
   function tick(dt) {
     moveDots(dt);
@@ -511,6 +797,8 @@ const CircuitScene = (() => {
     // 저항값을 «색띠»와 이름표에 그대로 반영한다 (실제 부품과 같은 읽기 방식)
     paintResistor(resA, 'A', state.rA);
     paintResistor(resB, 'B', state.rB);
+    paintBattery(state.emf);
+    layoutHands();
 
     if (placed.meters) {
       drawMeter(ammeter, r.It.toFixed(2), 'A', '전체 전류');
@@ -533,7 +821,7 @@ const CircuitScene = (() => {
   }
 
   /* ══ 컨트롤 ═════════════════════════════════ */
-  const guide = '스위치를 닫고 연결 방법을 바꿔 가며, 각 저항과 회로 전체에 흐르는 전류와 전압이 어떻게 달라지는지 비교해 보세요.';
+  const guide = '칼날 스위치의 손잡이를 내려 회로를 닫고, 가운데 판의 플러그를 옮겨 꽂아 연결 방법을 바꿔 가며, 각 저항과 회로 전체에 흐르는 전류와 전압이 어떻게 달라지는지 비교해 보세요.';
   const prepGuide = '점선으로 표시된 자리에 전지·저항·계기·전선을 끌어다 놓아 회로를 준비하세요.';
 
   function controlsHTML() {
@@ -549,12 +837,21 @@ const CircuitScene = (() => {
       ${LabUI.slider('rB', '저항 B<br><i>R</i><sub>B</sub>',
         { min: 5, max: 50, step: 1, value: state.rB, fmt: (v) => `${v} Ω` })}
       <div class="control">
+        <div class="clabel">직접<br>조작</div>
+        <div class="cbody"><p class="hands-on">
+          칼날 스위치의 <b>빨간 손잡이를 내리면</b> 회로가 닫히고 올리면 열립니다.
+          전지·저항 위 <b>＋ · －</b> 로 전압(1.5 V)과 저항(5 Ω)을 바꾸고,
+          가운데 판의 <b>플러그를 옮겨 꽂아</b> 직렬 · 병렬을 바꿉니다.
+        </p></div>
+      </div>
+      <div class="control">
         <div class="clabel">스위치</div>
         <button class="power${state.closed ? ' run' : ' off'}" id="swBtn">${state.closed ? '닫힘' : '열림'}</button>
       </div>`;
   }
 
   function bindControls(root, onChange) {
+    onChangeCb = onChange;      // 3D 에서 조작해도 측정값이 갱신되도록
     LabUI.bindOpts(root, 'mode', state, 'mode', onChange, String);
     LabUI.bindSlider(root, 'emf', state, 'emf', (v) => `${v.toFixed(1)} V`, onChange);
     LabUI.bindSlider(root, 'rA', state, 'rA', (v) => `${v} Ω`, onChange);

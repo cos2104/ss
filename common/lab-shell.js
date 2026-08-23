@@ -716,6 +716,14 @@ const LabUI = {
       m.backFaceCulling = false;
       pl.material = m;
       pl.billboardMode = BABYLON.Mesh.BILLBOARDMODE_Y;
+      // 글로우 레이어가 있는 장면에서 단추가 하얗게 번지지 않도록 제외한다.
+      // (레이어가 나중에 만들어지는 장면도 있어 첫 프레임에서 한 번 더 확인한다)
+      const exclude = () => (scene.effectLayers || []).forEach((L) => {
+        if (L.addExcludedMesh) L.addExcludedMesh(pl);
+      });
+      exclude();
+      const once = () => { exclude(); scene.onBeforeRenderObservable.removeCallback(once); };
+      scene.onBeforeRenderObservable.add(once);
       return pl;
     };
     const add = mk('Add'), sub = mk('Sub');
