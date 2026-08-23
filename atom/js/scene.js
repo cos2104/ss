@@ -18,6 +18,15 @@ const AtomScene = (() => {
   let nucleus, bohrOrbit, bohrElec, cloudDots = [], modelG;
   let placed = {};
 
+  /* 3D 화면에서 직접 만지는 부분들 */
+  let canvasRef = null;                 // 끌기가 끝나면 카메라를 다시 붙일 곳
+  let lampBulb = null;                  // 손전등 전구 — 고른 파장의 색을 띤다
+  let wRail = null, wKnob = null, wKnobMat = null, stepLam = null;
+  let beam = null, beamMat = null, flash = 0;   // 측정할 때 번쩍이는 빛줄기
+  let tagBohr = null, tagCloud = null, grabBall = null;
+  let drag = null, hold = false;
+  let onChangeCb = null;                // 3D 에서 만져도 측정값·그래프가 갱신되도록
+
   const state = {
     mode: 'model',        // 'uncertainty' | 'model'
     lambda: 1.0,          // 측정에 쓰는 빛의 파장 (0.3 짧음 ~ 2.0 김)
@@ -58,6 +67,7 @@ const AtomScene = (() => {
 
   /* ══ 장면 ═══════════════════════════════════ */
   function create(engine, canvas) {
+    canvasRef = canvas;
     scene = new (B().Scene)(engine);
     scene.clearColor = B().Color4.FromHexString('#141a28ff');
 
@@ -85,6 +95,8 @@ const AtomScene = (() => {
     buildModel();
     buildProps();
     buildPlaceholders();
+    buildHands();               // 파장 조절대 · 모형 표지 · 관측용 손잡이
+    setupPointer(canvas);
 
     // 교과서 그림 액자 (배경 소품)
     LabUI.addPoster(scene, '../assets/thumbs/atom.jpg', { x: -7.5, y: 0, z: 5.5, ry: 0.3 });
@@ -176,6 +188,7 @@ const AtomScene = (() => {
     bulb.position.set(0.5, 1.42, 0);
     bulb.material = emat('atPropLLM', '#ffd84a');
     bulb.parent = gl;
+    lampBulb = bulb;                    // 파장을 바꾸면 이 전구 색이 함께 바뀐다
     gl.position.set(-5, 0, 0);
     gl.setEnabled(false);
     props.lightT = gl;
@@ -258,6 +271,371 @@ const AtomScene = (() => {
     holders._spec = spec;
   }
 
+  /* ══ 3D 화면에서 직접 조작 ═══════════════════
+     불확정성 모드 — 파장 띠의 손잡이를 끌거나 ＋ / － 로 파장을 고르고,
+                    손전등을 누르면 그 빛으로 전자를 한 번 측정한다.
+     원자 모형 모드 — 실험대 앞의 모형 표지를 눌러 보어 ↔ 전자구름을 바꾸고,
+                    원자를 꾹 누르고 있으면 전자 위치가 계속 관측된다.        */
+
+  /** 파장에 따른 빛의 색 — 짧으면 보라, 길면 빨강 */
+  const LAM_STOPS = ['#8a5cf0', '#4a7cf0', '#3ad0d0', '#7ae060', '#ffd84a', '#ff9a3a', '#e8433c'];
+  function lamHex(l) {
+    const t = Math.max(0, Math.min(1, (l - 0.3) / 1.7)) * (LAM_STOPS.length - 1);
+    const i = Math.min(LAM_STOPS.length - 2, Math.floor(t));
+    const f = t - i;
+    const rgb = (h) => [1, 3, 5].map((k) => parseInt(h.substr(k, 2), 16));
+    const a = rgb(LAM_STOPS[i]), b = rgb(LAM_STOPS[i + 1]);
+    return '#' + a.map((v, k) => {
+      const n = Math.round(v + (b[k] - v) * f);
+      return (n < 16 ? '0' : '') + n.toString(16);
+    }).join('');
+  }
+
+  /* 파장 조절대 — 실험대 앞쪽에 비스듬히 세워 둔 색 띠와 손잡이
+     (측정값·탐구 미션 창에 가리지 않도록 화면 가운데 앞쪽에 놓는다)
+     RAIL_Y 는 «기울인 판의 가장 낮은 모서리»가 실험대 상판(y = -0.01) 위로
+     떠 있도록 정한다 — 낮으면 앞쪽 눈금이 상판에 파묻혀 보이지도 눌리지도 않는다.
+       가장 낮은 점 = RAIL_Y - (RAIL_H/2)·sin(0.45) = 0.38 - 0.304 = 0.076 */
+  const RAIL_X = 1.4, RAIL_Y = 0.38, RAIL_Z = -2.4;
+  const RAIL_W = 4.2, RAIL_H = 1.4, RAIL_IN = 0.42;
+  const RAIL_SPAN = RAIL_W - RAIL_IN * 2;
+  const RAIL_TILT = -0.45;                  // 카메라 쪽으로 살짝 세워 글씨가 잘 보이게
+  const railU = (l) => (Math.max(0.3, Math.min(2.0, l)) - 0.3) / 1.7;
+  const railLocalX = (l) => (railU(l) - 0.5) * RAIL_SPAN;
+  const railLamAt = (worldX) => 0.3 + ((worldX - RAIL_X) / RAIL_SPAN + 0.5) * 1.7;
+
+  /** 글로우 층에 번지지 않게 빼 둔다 (글씨가 하얗게 뭉개지지 않도록) */
+  function noGlow(m) {
+    (scene.effectLayers || []).forEach((L) => { if (L.addExcludedMesh) L.addExcludedMesh(m); });
+  }
+
+  function buildHands() {
+    buildRail();
+    buildBeam();
+    buildModelTags();
+    buildGrab();
+    stepLam = LabUI.makeStepper(scene, 'Lam');
+    stepLam.setEnabled(false);
+  }
+
+  function buildRail() {
+    wRail = B().MeshBuilder.CreateGround('atWRail', { width: RAIL_W, height: RAIL_H }, scene);
+    wRail.position.set(RAIL_X, RAIL_Y, RAIL_Z);
+    wRail.rotation.x = RAIL_TILT;
+
+    const TW = 588, TH = 196, pad = Math.round(TW * (RAIL_IN / RAIL_W));
+    const tex = new (B().DynamicTexture)('atWRailT', { width: TW, height: TH }, scene, true);
+    const c = tex.getContext();
+    c.fillStyle = '#1b2333';
+    c.fillRect(0, 0, TW, TH);
+    c.strokeStyle = '#3a4a60'; c.lineWidth = 5;
+    c.strokeRect(3, 3, TW - 6, TH - 6);
+    // 색 띠 — 보라(짧은 파장)에서 빨강(긴 파장)까지
+    const g = c.createLinearGradient(pad, 0, TW - pad, 0);
+    LAM_STOPS.forEach((h, i) => g.addColorStop(i / (LAM_STOPS.length - 1), h));
+    c.fillStyle = g;
+    c.fillRect(pad, 74, TW - pad * 2, 46);
+    c.strokeStyle = 'rgba(255,255,255,.35)'; c.lineWidth = 2;
+    c.strokeRect(pad, 74, TW - pad * 2, 46);
+    // 눈금
+    c.fillStyle = '#c8d4e4';
+    c.font = 'bold 24px "Noto Sans KR", sans-serif';
+    c.textAlign = 'center'; c.textBaseline = 'top';
+    [0.3, 0.75, 1.15, 1.6, 2.0].forEach((l) => {
+      const x = pad + railU(l) * (TW - pad * 2);
+      c.fillRect(x - 1, 122, 2, 10);
+      c.fillText(l.toFixed(1), x, 136);
+    });
+    // 머리글
+    c.font = 'bold 26px "Noto Sans KR", sans-serif';
+    c.textBaseline = 'top';
+    c.fillStyle = '#9fb0c2';
+    c.textAlign = 'left'; c.fillText('짧다', pad, 26);
+    c.textAlign = 'right'; c.fillText('길다', TW - pad, 26);
+    c.fillStyle = '#e8ecf4';
+    c.textAlign = 'center'; c.fillText('빛의 파장 λ', TW / 2, 26);
+    tex.update();
+
+    const m = new (B().StandardMaterial)('atWRailM', scene);
+    m.diffuseTexture = tex;
+    m.emissiveTexture = tex;
+    m.emissiveColor = new (B().Color3)(0.8, 0.8, 0.8);
+    m.specularColor = new (B().Color3)(0, 0, 0);
+    m.backFaceCulling = false;
+    wRail.material = m;
+    noGlow(wRail);
+
+    // 끌어 옮기는 손잡이 — 띠 위에 얹혀 파장을 가리킨다
+    wKnob = B().MeshBuilder.CreateCylinder('atWKnob',
+      { height: 0.5, diameterTop: 0.66, diameterBottom: 0.3 }, scene);
+    wKnob.parent = wRail;
+    wKnob.position.set(railLocalX(state.lambda), 0.24, 0);
+    wKnobMat = emat('atWKnobM', lamHex(state.lambda));
+    wKnob.material = wKnobMat;
+    wRail.setEnabled(false);
+  }
+
+  /** 측정할 때 손전등에서 전자 쪽으로 뻗는 빛줄기 */
+  function buildBeam() {
+    const from = new (B().Vector3)(-4.5, 1.42, 0);
+    const to = new (B().Vector3)(0, 3.1, 0.25);
+    const dir = to.subtract(from);
+    const len = dir.length();
+    beam = B().MeshBuilder.CreateCylinder('atBeamRay', { height: 1, diameter: 0.18 }, scene);
+    beam.scaling.y = len;
+    beam.position = from.add(dir.scale(0.5));
+    const u = dir.normalize();
+    const axis = B().Vector3.Cross(B().Axis.Y, u);
+    const dot = Math.max(-1, Math.min(1, B().Vector3.Dot(B().Axis.Y, u)));
+    if (axis.length() > 1e-6) {
+      beam.rotationQuaternion = B().Quaternion.RotationAxis(axis.normalize(), Math.acos(dot));
+    }
+    beamMat = emat('atBeamRayM', lamHex(state.lambda), 0.6);
+    beam.material = beamMat;
+    beam.isPickable = false;
+    beam.setEnabled(false);
+  }
+
+  /* ── 모형 표지 — 원자 양옆에 세워 둔 이름표 (늘 정면을 본다) ── */
+  function makeTag(name, x, y, z, w) {
+    const pl = B().MeshBuilder.CreatePlane(name, { width: w, height: 1.05 }, scene);
+    pl.position.set(x, y, z);
+    pl.billboardMode = B().Mesh.BILLBOARDMODE_Y;
+    const TW = Math.round(w * 96), TH = 96;
+    const tex = new (B().DynamicTexture)(name + 'T', { width: TW, height: TH }, scene, true);
+    tex.hasAlpha = true;
+    const m = new (B().StandardMaterial)(name + 'M', scene);
+    m.diffuseTexture = tex; m.opacityTexture = tex; m.emissiveTexture = tex;
+    m.emissiveColor = new (B().Color3)(0.95, 0.95, 0.95);
+    m.specularColor = new (B().Color3)(0, 0, 0);
+    m.backFaceCulling = false;
+    pl.material = m;
+    pl._tex = tex; pl._tw = TW; pl._th = TH;
+    noGlow(pl);
+    return pl;
+  }
+
+  /** 지금 고른 모형만 파랗게 칠한다 */
+  function paintTag(pl, text, on) {
+    if (!pl || !pl._tex) return;
+    const TW = pl._tw, TH = pl._th;
+    const c = pl._tex.getContext();
+    c.clearRect(0, 0, TW, TH);
+    c.fillStyle = on ? '#2f6ad0' : '#28304a';
+    c.fillRect(5, 10, TW - 10, TH - 20);
+    c.strokeStyle = on ? '#9fc8ff' : '#4a5568';
+    c.lineWidth = 3;
+    c.strokeRect(5, 10, TW - 10, TH - 20);
+    c.fillStyle = on ? '#ffffff' : '#9fb0c2';
+    c.font = 'bold 38px "Noto Sans KR", sans-serif';
+    c.textAlign = 'center'; c.textBaseline = 'middle';
+    c.fillText(text, TW / 2, TH / 2);
+    pl._tex.update();
+  }
+
+  function buildModelTags() {
+    tagBohr = makeTag('atTagBohr', -3.7, 1.15, -1.0, 3.6);
+    tagCloud = makeTag('atTagCloud', 3.7, 1.15, -1.0, 3.6);
+    tagBohr.setEnabled(false);
+    tagCloud.setEnabled(false);
+  }
+
+  /** 원자를 손으로 누를 수 있게 감싼 «관측 영역» (눈에는 보이지 않는다) */
+  function buildGrab() {
+    grabBall = B().MeshBuilder.CreateSphere('atGrab', { diameter: 5.6 }, scene);
+    grabBall.position.set(0, 3, 0);
+    grabBall.visibility = 0;
+    grabBall.material = emat('atGrabM', '#000000', 0.01);
+    noGlow(grabBall);
+    grabBall.setEnabled(false);
+  }
+
+  /** 모드에 맞추어 직접 조작 부품을 켜고 자리를 잡는다 (layout 마다 부른다) */
+  function placeHands(all, un) {
+    const onU = all && un;
+    if (wRail) {
+      wRail.setEnabled(onU);
+      if (wKnob) {
+        wKnob.position.x = railLocalX(state.lambda);
+        if (wKnobMat) wKnobMat.emissiveColor = B().Color3.FromHexString(lamHex(state.lambda));
+      }
+    }
+    if (stepLam) {
+      // 조절대 양 끝 바깥에 ＋ · － (단추 반지름 0.425 를 빼고도 0.3 쯤 떨어지도록)
+      stepLam.place(RAIL_X, RAIL_Y + 0.18, RAIL_Z, RAIL_W / 2 + 0.72);
+      stepLam.setEnabled(onU);
+    }
+    if (lampBulb && lampBulb.material) {
+      lampBulb.material.emissiveColor = B().Color3.FromHexString(lamHex(state.lambda));
+    }
+    if (beam) {
+      if (beamMat) beamMat.emissiveColor = B().Color3.FromHexString(lamHex(state.lambda));
+      beam.setEnabled(onU && flash > 0);
+    }
+
+    const onM = all && !un;
+    if (tagBohr) { tagBohr.setEnabled(onM); paintTag(tagBohr, '보어 궤도', state.model === 'bohr'); }
+    if (tagCloud) { tagCloud.setEnabled(onM); paintTag(tagCloud, '전자구름', state.model === 'cloud'); }
+    if (grabBall) grabBall.setEnabled(onM);
+  }
+
+  /** 3D 에서 값을 바꾼 뒤 — 장면과 측정값·그래프·조작 막대를 함께 갱신 */
+  function applyChange() {
+    if (onChangeCb) onChangeCb();     // 껍데기가 update() 까지 불러 준다
+    else update();
+    syncPanel();
+  }
+
+  /** 아래 조작 막대를 3D 에서 바꾼 값에 맞춘다 */
+  function syncPanel() {
+    const el = document.querySelector('#lam');
+    const out = document.querySelector('#lamOut');
+    if (el) el.value = state.lambda;
+    if (out) out.textContent = state.lambda.toFixed(1);
+    document.querySelectorAll('[data-model]').forEach((b) => {
+      b.classList.toggle('on', b.getAttribute('data-model') === state.model);
+    });
+    const run = document.querySelector('#runBtn');
+    if (run) {
+      run.textContent = state.running ? '관측 중…' : '▶ 전자 관측';
+      run.classList.toggle('run', state.running);
+    }
+  }
+
+  function setLam(v) {
+    const nv = Math.max(0.3, Math.min(2.0, Math.round(v * 10) / 10));
+    if (Math.abs(nv - state.lambda) < 1e-9) return;
+    state.lambda = nv;
+    applyChange();
+  }
+  function bumpLam(d) { setLam(state.lambda + d * 0.1); }
+
+  function setModel(m) {
+    if (state.model === m) return;
+    state.model = m;
+    applyChange();
+  }
+
+  /** 손전등을 한 번 켜서 전자를 측정한다 (아래 «전자 측정» 단추와 같은 계산) */
+  function measure() {
+    if (!sim) return;
+    // 위치: σ ∝ λ 가우시안, 반동: 크기 ∝ 1/λ 무작위 방향
+    const g = () => (Math.random() + Math.random() + Math.random() - 1.5) / 1.5;
+    const a = Math.random() * Math.PI * 2;
+    sim.hits.push({
+      x: g() * dx(), y: g() * dx(),
+      px: Math.cos(a) * dp(), py: Math.sin(a) * dp(),
+    });
+    if (sim.hits.length > 14) sim.hits.shift();
+    flash = 0.4;
+    if (beam) beam.setEnabled(true);
+    applyChange();
+  }
+
+  /** 전자 위치를 n 번 관측해 점을 찍는다 */
+  function observeOnce(n) {
+    if (!sim) return 0;
+    let made = 0;
+    for (let i = 0; i < n; i++) {
+      const before = cloudDots.length;
+      addCloudDot();
+      if (cloudDots.length > before) {
+        made += 1;
+        const r = cloudDots[cloudDots.length - 1].r;
+        const bin = Math.floor((r / (A0 * 4)) * 40);
+        if (bin >= 0 && bin < 40) sim.bins[bin] += 1;
+      }
+    }
+    return made;
+  }
+
+  /** 마우스가 가리키는 지점을 파장 조절대 면 위의 세계 좌표로 */
+  function railPointerX() {
+    const ray = scene.createPickingRay(scene.pointerX, scene.pointerY, null, camera);
+    const plane = B().Plane.FromPositionAndNormal(
+      new (B().Vector3)(RAIL_X, RAIL_Y, RAIL_Z),
+      new (B().Vector3)(0, Math.cos(RAIL_TILT), Math.sin(RAIL_TILT)));
+    const d = ray.intersectsPlane(plane);
+    if (d === null) return null;
+    return ray.origin.add(ray.direction.scale(d)).x;
+  }
+
+  /** 지금 가리키는 곳에 모형 이름표가 있으면 그 이름을 준다.
+      원자를 감싼 «관측 영역»(atGrab) 은 눈에 보이지 않으면서도 반지름이 2.8 이라
+      시점을 돌리면 이름표 앞을 가로막는다 (전체 시점의 1/4 가량).
+      그대로 두면 이름표를 눌러도 «관측» 이 되어 버리므로,
+      이름표만 따로 한 번 더 집어 늘 먼저 잡히게 한다. */
+  function pickTagName() {
+    if (!scene.pick) return '';
+    const p = scene.pick(scene.pointerX, scene.pointerY,
+      (mm) => mm.isEnabled() && (mm.name === 'atTagBohr' || mm.name === 'atTagCloud'));
+    return (p && p.hit && p.pickedMesh) ? p.pickedMesh.name : '';
+  }
+
+  function endDrag() {
+    if (!drag && !hold) return;
+    drag = null;
+    hold = false;
+    if (camera && canvasRef) camera.attachControl(canvasRef, true);
+  }
+
+  function setupPointer(canvas) {
+    scene.onPointerObservable.add((pi) => {
+      const T = B().PointerEventTypes;
+      const m = pi.pickInfo && pi.pickInfo.pickedMesh;
+      const nm = m ? m.name : '';
+
+      if (pi.type === T.POINTERDOWN) {
+        if (!allPlaced()) return;
+        if (state.mode === 'uncertainty') {
+          if (nm === 'btnAddLam') { bumpLam(+1); return; }
+          if (nm === 'btnSubLam') { bumpLam(-1); return; }
+          if (nm === 'atWKnob' || nm === 'atWRail') {
+            drag = 'lam';
+            camera.detachControl();
+            const x = railPointerX();
+            if (x !== null) setLam(railLamAt(x));
+            return;
+          }
+          // 손전등을 누르면 그 빛으로 전자를 한 번 측정한다
+          if (nm === 'atPropLL' || nm === 'atPropLH' || nm === 'atPropLB') { measure(); return; }
+          return;
+        }
+        // 원자 모형 모드 — 이름표가 투명한 관측 영역에 가려도 먼저 잡히게 한다
+        const tn = pickTagName() || nm;
+        if (tn === 'atTagBohr') { setModel('bohr'); return; }
+        if (tn === 'atTagCloud') { setModel('cloud'); return; }
+        if (nm === 'atGrab' || nm === 'atNuc' || nm === 'atElec' || nm === 'atOrbit') {
+          // 관측하려면 확률 모형이어야 한다 — 아래 applyChange() 한 번으로 함께 반영한다
+          // (여기서 setModel 을 부르면 셸 refresh 가 두 번 돌아 장면을 두 번 그린다)
+          if (state.model === 'bohr') state.model = 'cloud';
+          hold = true;
+          camera.detachControl();
+          observeOnce(8);
+          applyChange();
+        }
+        return;
+      }
+
+      if (pi.type === T.POINTERMOVE) {
+        if (drag === 'lam') {
+          const x = railPointerX();
+          if (x !== null) setLam(railLamAt(x));
+        }
+        return;
+      }
+
+      if (pi.type === T.POINTERUP) endDrag();
+    });
+
+    // 화면 밖에서 손을 떼도 «누르고 있는 상태»가 남지 않도록 한 번 더 챙긴다
+    const doc = canvas && canvas.ownerDocument;
+    if (doc) {
+      doc.addEventListener('pointerup', endDrag);
+      doc.addEventListener('pointercancel', endDrag);
+    }
+  }
+
   /* ══ 도구 배치 ═══════════════════════════════ */
   function resetTools() {
     placed = {};
@@ -281,6 +659,8 @@ const AtomScene = (() => {
   /* ══ 진행 ═══════════════════════════════════ */
   function reset() {
     state.running = false;
+    flash = 0;
+    endDrag();                       // 손에 쥔 것이 있으면 놓고 카메라를 되돌린다
     sim = { t: 0, hits: [], bins: new Array(40).fill(0) };
     clearCloud();
     layout();
@@ -290,6 +670,7 @@ const AtomScene = (() => {
     if (!sim) return;
     const all = allPlaced();
     const un = state.mode === 'uncertainty';
+    placeHands(all, un);             // 파장 조절대·모형 표지 자리잡기
 
     // 준비 단계 — 놓은 도구부터 하나씩 나타난다
     if (!all) {
@@ -321,31 +702,36 @@ const AtomScene = (() => {
   function tick(dt) {
     if (!sim || !allPlaced()) return false;
     sim.t += dt;
+    let live = false;
+
+    // 측정할 때 번쩍인 빛줄기를 서서히 지운다
+    if (flash > 0) {
+      flash = Math.max(0, flash - dt);
+      if (beamMat) beamMat.alpha = 0.15 + 0.65 * (flash / 0.4);
+      if (beam) beam.setEnabled(flash > 0 && state.mode === 'uncertainty');
+    }
 
     if (state.mode === 'model') {
       if (state.model === 'bohr') {
         bohrElec.position.set(Math.cos(sim.t * 1.6) * A0, 3, Math.sin(sim.t * 1.6) * A0);
-        return false;
+        return live;
+      }
+      // 원자를 꾹 누르고 있는 동안 계속 관측한다
+      if (hold && cloudDots.length < MAX_DOTS) {
+        observeOnce(4);
+        live = true;
       }
       if (state.running) {
-        for (let i = 0; i < 6; i++) {
-          const before = cloudDots.length;
-          addCloudDot();
-          if (cloudDots.length > before) {
-            const r = cloudDots[cloudDots.length - 1].r;
-            const bin = Math.floor((r / (A0 * 4)) * 40);
-            if (bin >= 0 && bin < 40) sim.bins[bin] += 1;
-          }
-        }
+        observeOnce(6);
         if (cloudDots.length >= MAX_DOTS) {
           state.running = false;
           const btn = document.querySelector('#runBtn');
           if (btn) { btn.textContent = '▶ 전자 관측'; btn.classList.remove('run'); }
         }
-        return true;
+        live = true;
       }
     }
-    return false;
+    return live;
   }
 
   function update() {
@@ -373,6 +759,13 @@ const AtomScene = (() => {
     if (state.mode === 'uncertainty') {
       return `
         ${modeBtns}
+        <div class="control">
+          <div class="clabel">직접<br>조작</div>
+          <div class="cbody"><p class="hands-on">
+            실험대 위 <b>색 띠의 손잡이를 끌거나</b> 그 옆 <b>＋ · －</b> 로 빛의 파장을 고르고,
+            <b>손전등을 누르면</b> 그 빛으로 전자를 한 번 측정합니다.
+          </p></div>
+        </div>
         ${LabUI.slider('lam', '측정용 빛의 파장',
           { min: 0.3, max: 2.0, step: 0.1, value: state.lambda, fmt: (v) => `${(+v).toFixed(1)}` })}
         <div class="control">
@@ -386,6 +779,13 @@ const AtomScene = (() => {
     }
     return `
       ${modeBtns}
+      <div class="control">
+        <div class="clabel">직접<br>조작</div>
+        <div class="cbody"><p class="hands-on">
+          실험대 앞의 <b>모형 표지를 누르면</b> 보어 궤도 ↔ 전자구름이 바뀌고,
+          <b>원자를 꾹 누르고 있으면</b> 누르는 동안 전자 위치가 계속 관측됩니다.
+        </p></div>
+      </div>
       ${LabUI.opts('원자 모형', 'model', [
         { v: 'bohr', t: '보어 (궤도)' }, { v: 'cloud', t: '현대 (전자구름)' },
       ], state.model, 1)}
@@ -400,6 +800,8 @@ const AtomScene = (() => {
   }
 
   function bindControls(root, onChange) {
+    onChangeCb = onChange;          // 3D 에서 직접 조작해도 측정값이 갱신되도록
+
     root.querySelectorAll('[data-mode]').forEach((b) => b.addEventListener('click', () => {
       state.mode = b.getAttribute('data-mode');
       reset();
@@ -410,18 +812,8 @@ const AtomScene = (() => {
 
     if (state.mode === 'uncertainty') {
       LabUI.bindSlider(root, 'lam', state, 'lambda', (v) => `${(+v).toFixed(1)}`, () => { layout(); onChange(); });
-      root.querySelector('#measureBtn').addEventListener('click', () => {
-        // 위치: σ ∝ λ 가우시안, 반동: 크기 ∝ 1/λ 무작위 방향
-        const g = () => (Math.random() + Math.random() + Math.random() - 1.5) / 1.5;
-        const a = Math.random() * Math.PI * 2;
-        sim.hits.push({
-          x: g() * dx(), y: g() * dx(),
-          px: Math.cos(a) * dp(), py: Math.sin(a) * dp(),
-        });
-        if (sim.hits.length > 14) sim.hits.shift();
-        layout();
-        onChange();
-      });
+      // 3D 의 손전등을 누르는 것과 같은 동작
+      root.querySelector('#measureBtn').addEventListener('click', () => { measure(); });
     } else {
       LabUI.bindOpts(root, 'model', state, 'model', () => {
         layout();
@@ -434,6 +826,7 @@ const AtomScene = (() => {
         run.textContent = state.running ? '관측 중…' : '▶ 전자 관측';
         run.classList.toggle('run', state.running);
         onChange();
+        syncPanel();               // 모형 단추 표시도 3D 표지와 맞춘다
       });
     }
     root.querySelector('#resetBtn').addEventListener('click', () => {

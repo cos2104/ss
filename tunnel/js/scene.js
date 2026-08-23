@@ -25,6 +25,18 @@ const TunnelScene = (() => {
 
   let sim = null;
 
+  /* ══ 3D 화면에서 직접 조작 — 모듈 변수 ══════════
+     · 판 위 장벽의 «옆면»을 좌우로 끌면 두께 w, «윗면»을 위아래로 끌면 높이 V₀
+     · 노란 «에너지 선»을 위아래로 끌면 전자 에너지 E
+     · 전자 발생기를 누르면 파동을 쏘고, 옆 이름표를 누르면 전자를 1개 쏜다
+     · STM 에서는 탐침을 잡아 좌우로 옮기고 위아래로 틈을 조절한다          */
+  let canvasEl = null;        // create() 가 받은 canvas — 끌기 중 카메라를 떼었다 붙인다
+  let onChangeCb = null;      // 3D 로 값을 바꿔도 측정값·그래프가 갱신되도록
+  let glowL = null;           // 글로우 레이어 (이름표 글씨가 하얗게 번지지 않게 제외)
+  let drag = null;            // { what, dx, dy, … }
+  let stepGap = null;         // STM 틈 ＋ · －
+  let runTag = null, shotTag = null, gapTag = null;
+
   const tools = [
     { id: 'srcT', label: '전자 발생기', icon: 'tower' },
     { id: 'barrierT', label: '퍼텐셜 장벽', icon: 'screenBoard' },
@@ -63,6 +75,7 @@ const TunnelScene = (() => {
 
   /* ══ 장면 ═══════════════════════════════════ */
   function create(engine, canvas) {
+    canvasEl = canvas;          // 끌기 중 카메라를 떼었다 붙일 때 쓴다
     scene = new (B().Scene)(engine);
     scene.clearColor = B().Color4.FromHexString('#141a28ff');
 
@@ -80,6 +93,7 @@ const TunnelScene = (() => {
     hemi.groundColor = new (B().Color3)(0.3, 0.32, 0.4);
     const glow = new (B().GlowLayer)('tuGlow', scene);
     glow.intensity = 0.5;
+    glowL = glow;
 
     // 실험대 — 항상 보이는 기본 배경
     const bench = B().MeshBuilder.CreateBox('tuBench', { width: 22, height: 0.5, depth: 12 }, scene);
@@ -89,10 +103,12 @@ const TunnelScene = (() => {
     buildBoard();
     buildSTM();
     buildProps();
+    buildHands();
     buildPlaceholders();
+    setupPointer();
 
     // 교과서 그림 액자 (배경 소품)
-    LabUI.addPoster(scene, '../assets/thumbs/tunnel.jpg', { x: -8, y: 0, z: 6, ry: 0.3 });
+    LabUI.addPoster(scene, '../assets/thumbs/tunnel.jpg', { x: -12, y: 0, z: -3 });
 
     resetTools();
     return scene;
@@ -113,9 +129,20 @@ const TunnelScene = (() => {
     return m;
   }
 
+  /* ── 판(화면)의 크기·자리와 그림 눈금 ───────────
+     그리기와 «직접 조작»이 같은 환산식을 써야 손잡이를 정확히 집을 수 있다.  */
+  const BW = 12, BHT = 7, BCY = 3.4, BCZ = 0.5;             // 판의 가로·세로·중심 높이·깊이
+  const PX0 = 60, PX1 = 1140, YMID = 420, EH = 260;         // 그림 안 눈금 (px)
+  const bxOf = (u) => PX0 + ((u + 6) / 12) * (PX1 - PX0);   // 위치(nm) → 가로 px
+  const buOf = (px) => ((px - PX0) / (PX1 - PX0)) * 12 - 6; // 가로 px → 위치(nm)
+  const byOf = (v) => YMID - (v / 14) * EH;                 // 에너지 → 세로 px
+  const bvOf = (py) => ((YMID - py) / EH) * 14;             // 세로 px → 에너지
+  const barH = () => (state.V0 / 14) * EH;                  // 장벽의 그림 높이 (px)
+  const HKX = 30, HKY = 92;                                 // 옆면 손잡이의 어긋난 자리
+
   function buildBoard() {
-    boardPlane = B().MeshBuilder.CreatePlane('tuBoard', { width: 12, height: 7 }, scene);
-    boardPlane.position.set(0, 3.4, 0.5);
+    boardPlane = B().MeshBuilder.CreatePlane('tuBoard', { width: BW, height: BHT }, scene);
+    boardPlane.position.set(0, BCY, BCZ);
     boardTex = new (B().DynamicTexture)('tuBoardTex', { width: 1200, height: 700 }, scene, true);
     const m = new (B().StandardMaterial)('tuBoardM', scene);
     m.diffuseTexture = boardTex;
@@ -131,18 +158,18 @@ const TunnelScene = (() => {
     const ctx = boardTex.getContext();
     ctx.fillStyle = '#1c2436';
     ctx.fillRect(0, 0, 1200, 700);
-    const X0 = 60, X1 = 1140, YMID = 420, H = 200;
-    const xOf = (u) => X0 + ((u + 6) / 12) * (X1 - X0);   // u: -6~6 (nm 연출)
+    const X0 = PX0, X1 = PX1, H = 200;
+    const xOf = bxOf;                                     // u: -6~6 (nm 연출)
 
     // 에너지 축 (장벽)
     const bx0 = xOf(-state.w / 2), bx1 = xOf(state.w / 2);
-    const bh = (state.V0 / 14) * 260;
+    const bh = barH();
     ctx.fillStyle = 'rgba(122,132,148,.55)';
     ctx.fillRect(bx0, YMID - bh, bx1 - bx0, bh + 180);
     ctx.strokeStyle = '#9fb0c2'; ctx.lineWidth = 2;
     ctx.strokeRect(bx0, YMID - bh, bx1 - bx0, bh + 180);
     // 전자 에너지 선
-    const ey = YMID - (state.E / 14) * 260;
+    const ey = byOf(state.E);
     ctx.strokeStyle = '#ffd84a';
     ctx.setLineDash([10, 8]);
     ctx.beginPath(); ctx.moveTo(X0, ey); ctx.lineTo(X1, ey); ctx.stroke();
@@ -153,7 +180,8 @@ const TunnelScene = (() => {
     ctx.fillText(`전자 에너지 E = ${state.E.toFixed(1)}`, X0 + 6, ey - 6);
     ctx.fillStyle = '#9fb0c2';
     ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
-    ctx.fillText(`장벽 V₀ = ${state.V0.toFixed(1)} · 두께 ${state.w.toFixed(1)} nm`, (bx0 + bx1) / 2, YMID - bh - 8);
+    // 이름표는 «윗면 손잡이» 위로 띄워 겹치지 않게 한다
+    ctx.fillText(`장벽 V₀ = ${state.V0.toFixed(1)} · 두께 ${state.w.toFixed(1)} nm`, (bx0 + bx1) / 2, YMID - bh - 34);
 
     // 파동 묶음 |Ψ|²
     const T = transT();
@@ -193,7 +221,31 @@ const TunnelScene = (() => {
       ctx.textAlign = 'right';
       ctx.fillText(`통과 ${(100 * T).toFixed(2)} %`, X1 - 10, YMID + 165);
     }
+    drawHandles(ctx, bx0, bx1, bh, ey);
     boardTex.update();
+  }
+
+  /** 손으로 끌 수 있는 «손잡이» — 장벽 옆면·윗면과 에너지 선 (그림 맨 위에 얹는다) */
+  function drawHandles(ctx, bx0, bx1, bh, ey) {
+    const knob = (x, y, hex, ink, sym) => {
+      ctx.fillStyle = hex;
+      ctx.beginPath(); ctx.arc(x, y, 26, 0, 7); ctx.fill();
+      ctx.strokeStyle = 'rgba(28,36,54,.75)'; ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.arc(x, y, 26, 0, 7); ctx.stroke();
+      ctx.fillStyle = ink;
+      ctx.font = 'bold 30px sans-serif';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(sym, x, y + 1);
+    };
+    knob(bx0 - HKX, YMID + HKY, '#cfd8e4', '#1c2436', '↔');   // 왼쪽 옆면 — 두께
+    knob(bx1 + HKX, YMID + HKY, '#cfd8e4', '#1c2436', '↔');   // 오른쪽 옆면 — 두께
+    knob((bx0 + bx1) / 2, YMID - bh, '#cfd8e4', '#1c2436', '↕'); // 윗면 — 높이
+    knob(PX1 - 70, ey, '#ffd84a', '#3a2c00', '↕');            // 에너지 선 — E
+
+    ctx.fillStyle = '#8e9bad';
+    ctx.font = 'bold 20px "Noto Sans KR", sans-serif';
+    ctx.textAlign = 'right'; ctx.textBaseline = 'top';
+    ctx.fillText('동그란 손잡이를 끌어 두께 · 높이 · 에너지를 바꿔 보세요', PX1, 26);
   }
 
   function buildSTM() {
@@ -214,9 +266,10 @@ const TunnelScene = (() => {
     tip = B().MeshBuilder.CreateCylinder('tuTip', { height: 2.2, diameterTop: 1.2, diameterBottom: 0.06 }, scene);
     tip.material = mat('tuTipM', '#d8b44a', '#ffe8a0', 96);
     tip.parent = stmG;
-    // 전류계
+    // 전류계 — 탐침이 오른쪽 끝(x = 4.5, 위쪽 지름 1.2)까지 가도 뚫고 지나가지 않도록
+    //          x = 7.0 (계기판 왼쪽 모서리 5.5) 에 두어 0.4 만큼 띄운다
     const p = B().MeshBuilder.CreatePlane('tuAmm', { width: 3, height: 2 }, scene);
-    p.position.set(4.6, 4.6, 0);
+    p.position.set(7.0, 4.6, 0);
     currentTex = new (B().DynamicTexture)('tuAmmTex', { width: 300, height: 200 }, scene, true);
     const m = new (B().StandardMaterial)('tuAmmM', scene);
     m.diffuseTexture = currentTex; m.emissiveTexture = currentTex;
@@ -225,6 +278,8 @@ const TunnelScene = (() => {
     m.backFaceCulling = false;
     p.material = m;
     p.parent = stmG;
+    // 글로우 레이어가 계기판을 하얗게 태워 눈금이 안 보이던 것을 막는다
+    if (glowL && glowL.addExcludedMesh) glowL.addExcludedMesh(p);
   }
 
   const props = {};
@@ -281,6 +336,305 @@ const TunnelScene = (() => {
     currentTex.update();
   }
 
+  /* ══ 3D 화면에서 직접 조작 ═══════════════════ */
+
+  /** 글씨를 새길 수 있는 얇은 판 (단추·이름표) */
+  function makePlate(name, w, h) {
+    const W = Math.round(w * 110), H = Math.round(h * 110);
+    const pl = B().MeshBuilder.CreatePlane(name, { width: w, height: h }, scene);
+    const tex = new (B().DynamicTexture)(name + 'T', { width: W, height: H }, scene, true);
+    tex.hasAlpha = true;
+    const m = new (B().StandardMaterial)(name + 'M', scene);
+    m.diffuseTexture = tex; m.opacityTexture = tex; m.emissiveTexture = tex;
+    m.emissiveColor = new (B().Color3)(1, 1, 1);
+    m.specularColor = new (B().Color3)(0, 0, 0);
+    m.backFaceCulling = false;
+    pl.material = m;
+    pl._tex = tex; pl._w = W; pl._h = H;
+    if (glowL && glowL.addExcludedMesh) glowL.addExcludedMesh(pl);   // 글씨가 하얗게 번지지 않게
+    return pl;
+  }
+
+  /** 판에 글씨를 다시 새긴다 — 내용이 그대로면 다시 그리지 않는다 */
+  function paintPlate(pl, text, on, hex) {
+    if (!pl || !pl._tex) return;
+    const key = `${text}|${on ? 1 : 0}|${hex || ''}`;
+    if (pl._last === key) return;
+    pl._last = key;
+    const W = pl._w, H = pl._h;
+    const ctx = pl._tex.getContext();
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = on ? (hex || '#2f6ad0') : '#2a3242';
+    ctx.fillRect(2, 2, W - 4, H - 4);
+    ctx.strokeStyle = on ? '#ffffff' : '#7a8aa0';
+    ctx.lineWidth = 4;
+    ctx.strokeRect(5, 5, W - 10, H - 10);
+    let fs = Math.round(H * 0.44);
+    const font = (s) => `bold ${s}px "Noto Sans KR", sans-serif`;
+    ctx.font = font(fs);
+    while (fs > 11 && ctx.measureText(text).width > W - 26) { fs -= 2; ctx.font = font(fs); }
+    ctx.fillStyle = on ? '#ffffff' : '#c8d4e4';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(text, W / 2, H / 2);
+    pl._tex.update();
+  }
+
+  /** 3D 단추·이름표와 STM 틈 ＋ · － 를 만든다 */
+  function buildHands() {
+    runTag = makePlate('tuRunTag', 3.4, 0.78);       // 실험대 앞 — 파동 발사 · 표면 스캔
+    shotTag = makePlate('tuShotTag', 3.6, 0.78);     // 실험대 앞 — 전자 1개 쏘기
+    gapTag = makePlate('tuGapTag', 2.6, 0.78);       // 실험대 앞 — 지금의 틈
+    stepGap = LabUI.makeStepper(scene, 'Gap', { addColor: '#2f8f5a' });
+    runTag.setEnabled(false);
+    shotTag.setEnabled(false);
+    gapTag.setEnabled(false);
+    stepGap.setEnabled(false);
+  }
+
+  /** 단추·이름표의 자리와 표시를 다시 잡는다 (layout 에서 매번 부른다) */
+  function layoutHands() {
+    const on = allPlaced();
+    const pk = state.mode === 'packet';
+
+    // ── 실험대 «앞쪽 모서리»의 단추들 — 판(화면)을 가리지 않는 자리에 둔다
+    if (runTag) {
+      runTag.position.set(-5.6, 0.95, -4.4);
+      runTag.setEnabled(on);
+      paintPlate(runTag,
+        state.running ? '■ 멈춤' : (pk ? '▶ 파동 발사' : '▶ 표면 스캔'),
+        true, state.running ? '#c0553f' : '#2f8f5a');
+    }
+    if (shotTag) {
+      shotTag.position.set(-1.9, 0.95, -4.4);
+      shotTag.setEnabled(on && pk);
+      paintPlate(shotTag, `전자 1개 쏘기 · ${sim ? sim.shots : 0}회`, true, '#b8791c');
+    }
+
+    // ── STM 모드: 같은 줄에 틈 ＋ · － 와 지금의 틈
+    //    (탐침 옆에 두면 탐침이 오른쪽으로 갈 때 전류계와 겹치므로 앞줄에 고정한다)
+    if (stepGap) {
+      stepGap.place(0.4, 0.95, -4.4, 2.0);
+      stepGap.setEnabled(on && !pk);
+    }
+    if (gapTag) {
+      gapTag.position.set(0.4, 0.95, -4.4);
+      gapTag.setEnabled(on && !pk);
+      paintPlate(gapTag, `틈 ${state.gap.toFixed(2)} nm`, true, '#2f6ad0');
+    }
+  }
+
+  /** 최소·최대 안에서 한 눈금 단위로 맞춘다 (슬라이더와 똑같은 범위) */
+  function snap(v, lo, hi, st) {
+    const q = Math.round(Math.max(lo, Math.min(hi, v)) / st) * st;
+    return Math.round(Math.max(lo, Math.min(hi, q)) * 1000) / 1000;
+  }
+
+  /** 3D 조작 뒤 — 껍데기가 update() 까지 불러 준다 */
+  function applyChange() {
+    if (onChangeCb) onChangeCb();
+    else update();
+    syncPanel();
+  }
+
+  /** 아래 조작 막대를 3D 에서 바꾼 값에 맞춘다 */
+  function syncPanel() {
+    const put = (id, v, txt) => {
+      const el = document.querySelector('#' + id);
+      const out = document.querySelector('#' + id + 'Out');
+      if (el) el.value = v;
+      if (out) out.textContent = txt;
+    };
+    if (state.mode === 'packet') {
+      put('eCtl', state.E, state.E.toFixed(1));
+      put('vCtl', state.V0, state.V0.toFixed(1));
+      put('wCtl', state.w, `${state.w.toFixed(1)} nm`);
+    } else {
+      put('gapCtl', state.gap, `${state.gap.toFixed(2)} nm`);
+      put('tipCtl', state.tipX, state.tipX.toFixed(1));
+    }
+    syncRunBtn();
+  }
+
+  /** 실행 단추의 글씨를 지금 상태에 맞춘다 */
+  function syncRunBtn() {
+    const btn = document.querySelector('#runBtn');
+    if (!btn) return;
+    btn.textContent = state.running
+      ? '진행 중…'
+      : (state.mode === 'packet' ? '▶ 파동 발사' : '▶ 표면 스캔');
+    btn.classList.toggle('run', state.running);
+  }
+
+  /** 파동을 쏘거나 멈춘다 — 전자 발생기를 누르는 것과 같다 */
+  function fireWave() {
+    if (sim && sim.phase !== 'in') reset();
+    state.running = !state.running;
+    applyChange();
+  }
+
+  /** 모드에 맞게 «시작 · 멈춤» — 파동 발사 또는 STM 표면 스캔 */
+  function toggleRun() {
+    if (state.mode === 'packet') { fireWave(); return; }
+    state.running = !state.running;
+    applyChange();
+  }
+
+  /** 전자를 딱 1개 쏜다 — 확률 T 로 통과한다 */
+  function shotOne() {
+    if (!sim) return;
+    sim.shots += 1;
+    if (Math.random() < transT()) sim.passed += 1;
+    applyChange();
+  }
+
+  /** 장벽 두께·높이·전자 에너지를 3D 에서 바꾼다 (범위는 슬라이더와 똑같이) */
+  function setParam(key, v) {
+    const lim = { E: [1, 14, 0.5], V0: [2, 14, 0.5], w: [0.2, 2.0, 0.1] }[key];
+    if (!lim) return;
+    const nv = snap(v, lim[0], lim[1], lim[2]);
+    if (nv === state[key]) return;
+    state[key] = nv;
+    reset();                 // 조건이 바뀌면 슬라이더와 똑같이 처음부터 다시
+    applyChange();
+  }
+
+  /** STM 틈을 0.05 nm 씩 — 지수적 민감함을 손끝으로 느껴 본다 */
+  function bumpGap(d) {
+    const v = snap(state.gap + d * 0.05, 0.45, 1.2, 0.05);
+    if (v === state.gap) return;
+    state.gap = v;
+    applyChange();
+  }
+
+  /** 손끝이 가리키는 세계 좌표 (주어진 평면 위) */
+  function planePoint(origin, normal) {
+    const ray = scene.createPickingRay(scene.pointerX, scene.pointerY, null, camera);
+    const plane = B().Plane.FromPositionAndNormal(origin, normal);
+    const d = ray.intersectsPlane(plane);
+    if (d === null || d < 0) return null;
+    return ray.origin.add(ray.direction.scale(d));
+  }
+
+  /** 손끝이 가리키는 «판 위의 자리»를 그림 픽셀로 */
+  function boardPx() {
+    const pt = planePoint(new (B().Vector3)(0, BCY, BCZ), new (B().Vector3)(0, 0, 1));
+    if (!pt) return null;
+    return {
+      px: ((pt.x + BW / 2) / BW) * 1200,
+      py: ((BCY + BHT / 2 - pt.y) / BHT) * 700,
+    };
+  }
+
+  /** 판 위에서 무엇을 집었는가 — 'w' | 'V0' | 'E' | null */
+  function boardGrab(p) {
+    const bx0 = bxOf(-state.w / 2), bx1 = bxOf(state.w / 2);
+    const bh = barH();
+    const ey = byOf(state.E);
+    const near = (x, y, r) => (p.px - x) ** 2 + (p.py - y) ** 2 <= r * r;
+    // 동그란 손잡이를 먼저 본다
+    if (near(PX1 - 70, ey, 44)) return 'E';
+    if (near((bx0 + bx1) / 2, YMID - bh, 44)) return 'V0';
+    if (near(bx0 - HKX, YMID + HKY, 44) || near(bx1 + HKX, YMID + HKY, 44)) return 'w';
+    // 손잡이를 살짝 벗어나도 «선·모서리» 자체를 집을 수 있게
+    if (Math.abs(p.py - ey) <= 20 && (p.px < bx0 - 46 || p.px > bx1 + 46)) return 'E';
+    if (p.py > YMID - bh - 20 && p.py < YMID + 180
+        && (Math.abs(p.px - bx0) <= 24 || Math.abs(p.px - bx1) <= 24)) return 'w';
+    if (Math.abs(p.py - (YMID - bh)) <= 22 && p.px > bx0 - 24 && p.px < bx1 + 24) return 'V0';
+    return null;
+  }
+
+  /** 판 위에서 끄는 중 — 누른 순간의 어긋남을 빼 값이 튀지 않게 한다 */
+  function moveBoardDrag(p) {
+    if (drag.what === 'E') { setParam('E', bvOf(p.py + drag.dy)); return; }
+    if (drag.what === 'V0') { setParam('V0', bvOf(p.py + drag.dy)); return; }
+    // 두께 — 장벽은 가운데 대칭이므로 «집은 옆면»까지의 거리를 2배 한다
+    setParam('w', Math.abs(buOf(p.px + drag.dx)) * 2);
+  }
+
+  /** 탐침을 끄는 중 — 좌우는 위치, 위아래는 틈 */
+  function moveTipDrag() {
+    const pt = planePoint(new (B().Vector3)(0, 0, 0), new (B().Vector3)(0, 0, 1));
+    if (!pt) return;
+    const nx = snap(drag.tipX0 + (pt.x - drag.x0), -4.5, 4.5, 0.1);
+    const ng = snap(drag.gap0 + (pt.y - drag.y0) / 3.2, 0.45, 1.2, 0.05);
+    if (nx === state.tipX && ng === state.gap) return;
+    state.tipX = nx;
+    state.gap = ng;
+    applyChange();
+  }
+
+  /**
+   * 잡고 있던 것을 놓아 준다.
+   * «실험 다시하기» 처럼 끌던 도중에 끼어드는 길이 있고 화면 밖에서 손을 뗄 수도 있으므로,
+   * 손을 뗀 것으로 치고 카메라 조작을 «반드시» 되돌려 놓는다 (잠긴 채 남으면 화면이 안 돌아간다).
+   */
+  function endDrag() {
+    if (!drag) return;
+    drag = null;
+    if (camera && canvasEl) camera.attachControl(canvasEl, true);
+  }
+
+  function setupPointer() {
+    scene.onPointerObservable.add((pi) => {
+      const T = B().PointerEventTypes;
+      const m = pi.pickInfo && pi.pickInfo.pickedMesh;
+      const nm = m ? m.name : '';
+
+      if (pi.type === T.POINTERDOWN) {
+        if (!allPlaced() || !sim) return;
+
+        // 실험대 앞 단추 — 파동 발사 · 표면 스캔 (두 모드 모두)
+        if (nm === 'tuRunTag') { toggleRun(); return; }
+
+        if (state.mode === 'packet') {
+          // 전자 발생기를 눌러도 파동을 쏜다
+          if (nm === 'tuPropSB' || nm === 'tuPropSN') { fireWave(); return; }
+          if (nm === 'tuShotTag') { shotOne(); return; }
+          if (nm !== 'tuBoard') return;
+          const p = boardPx();
+          if (!p) return;
+          const what = boardGrab(p);
+          if (!what) return;
+          const bx0 = bxOf(-state.w / 2), bx1 = bxOf(state.w / 2);
+          drag = { what, dx: 0, dy: 0 };
+          if (what === 'w') drag.dx = (p.px < (bx0 + bx1) / 2 ? bx0 : bx1) - p.px;
+          else if (what === 'V0') drag.dy = (YMID - barH()) - p.py;
+          else drag.dy = byOf(state.E) - p.py;
+          camera.detachControl();
+          return;
+        }
+
+        // STM — 틈 ＋ · － 와 탐침 끌기
+        if (nm === 'btnAddGap') { bumpGap(+1); return; }
+        if (nm === 'btnSubGap') { bumpGap(-1); return; }
+        if (nm === 'tuTip' || nm === 'tuGapTag') {
+          const pt = planePoint(new (B().Vector3)(0, 0, 0), new (B().Vector3)(0, 0, 1));
+          if (!pt) return;
+          drag = { what: 'tip', x0: pt.x, y0: pt.y, tipX0: state.tipX, gap0: state.gap };
+          if (state.running) { state.running = false; syncRunBtn(); }   // 손으로 잡으면 자동 스캔은 멈춘다
+          camera.detachControl();
+        }
+        return;
+      }
+
+      if (pi.type === T.POINTERMOVE && drag) {
+        if (drag.what === 'tip') { moveTipDrag(); return; }
+        const p = boardPx();
+        if (p) moveBoardDrag(p);
+        return;
+      }
+
+      if (pi.type === T.POINTERUP) endDrag();
+    });
+
+    // 화면 밖(설명 칸·사이드바)에서 손을 떼도 «잡은 상태»가 남지 않도록 한 번 더 챙긴다
+    const doc = canvasEl && canvasEl.ownerDocument;
+    if (doc) {
+      doc.addEventListener('pointerup', endDrag);
+      doc.addEventListener('pointercancel', endDrag);
+    }
+  }
+
   /* ── 배치 자리 ──────────────────────────────── */
   const holders = {};
   function buildPlaceholders() {
@@ -307,6 +661,7 @@ const TunnelScene = (() => {
 
   /* ══ 도구 배치 ═══════════════════════════════ */
   function resetTools() {
+    endDrag();          // 끌던 도중 «실험 다시하기» 를 눌러도 카메라가 잠긴 채 남지 않게
     placed = {};
     tools.forEach((t) => { placed[t.id] = false; });
     applyPlacement();
@@ -334,6 +689,7 @@ const TunnelScene = (() => {
       scan: [],           // STM 스캔 기록 {x, I}
     };
     layout();
+    syncRunBtn();
   }
 
   function layout() {
@@ -352,6 +708,7 @@ const TunnelScene = (() => {
       }
       if (props.srcT) props.srcT.setEnabled(!!placed.srcT);
       if (props.detT) props.detT.setEnabled(!!placed.detT);
+      layoutHands();
       return;
     }
     if (props.srcT) props.srcT.setEnabled(pk);
@@ -367,6 +724,7 @@ const TunnelScene = (() => {
       tip.position.set(state.tipX, 1.15 + h * 6 + state.gap * 3.2 + 1.1, 0);
       drawCurrent();
     }
+    layoutHands();
   }
 
   function tick(dt) {
@@ -387,8 +745,8 @@ const TunnelScene = (() => {
         sim.tx += 2.4 * dt;
         if (sim.rx < -6.5) {
           state.running = false;
-          const btn = document.querySelector('#runBtn');
-          if (btn) { btn.textContent = '▶ 파동 발사'; btn.classList.remove('run'); }
+          syncRunBtn();
+          layoutHands();
         }
       }
       drawPacket();
@@ -433,6 +791,14 @@ const TunnelScene = (() => {
     if (state.mode === 'packet') {
       return `
         ${modeBtns}
+        <div class="control">
+          <div class="clabel">직접<br>조작</div>
+          <div class="cbody"><p class="hands-on">
+            화면 속 <b>장벽의 옆면을 좌우로 끌면 두께</b>가, <b>윗면을 위아래로 끌면 높이</b>가 바뀝니다.
+            노란 <b>에너지 선을 위아래로 끌어</b> <i>E</i> 를 정하고,
+            <b>전자 발생기를 누르면</b> 파동을 쏩니다.
+          </p></div>
+        </div>
         ${LabUI.slider('eCtl', '전자 에너지 <i>E</i>',
           { min: 1, max: 14, step: 0.5, value: state.E, fmt: (v) => `${(+v).toFixed(1)}` })}
         ${LabUI.slider('vCtl', '장벽 높이 <i>V</i>₀',
@@ -454,6 +820,13 @@ const TunnelScene = (() => {
     }
     return `
       ${modeBtns}
+      <div class="control">
+        <div class="clabel">직접<br>조작</div>
+        <div class="cbody"><p class="hands-on">
+          <b>탐침을 잡고 좌우로 끌면</b> 탐침 위치가, <b>위아래로 끌면 틈</b>이 바뀝니다.
+          실험대 앞의 <b>＋ · －</b> 로 틈을 0.05 nm 씩 맞춰 전류가 얼마나 뛰는지 보세요.
+        </p></div>
+      </div>
       ${LabUI.slider('gapCtl', '탐침-시료 거리',
         { min: 0.45, max: 1.2, step: 0.05, value: state.gap, fmt: (v) => `${(+v).toFixed(2)} nm` })}
       ${LabUI.slider('tipCtl', '탐침 위치',
@@ -469,7 +842,10 @@ const TunnelScene = (() => {
   }
 
   function bindControls(root, onChange) {
+    onChangeCb = onChange;          // 3D 에서 직접 조작해도 측정값이 갱신되도록
+
     root.querySelectorAll('[data-mode]').forEach((b) => b.addEventListener('click', () => {
+      endDrag();                    // 끌던 손잡이가 바뀐 모드로 넘어가지 않게
       state.mode = b.getAttribute('data-mode');
       reset();
       root.innerHTML = controlsHTML();
@@ -482,29 +858,15 @@ const TunnelScene = (() => {
       LabUI.bindSlider(root, 'eCtl', state, 'E', (v) => `${(+v).toFixed(1)}`, after);
       LabUI.bindSlider(root, 'vCtl', state, 'V0', (v) => `${(+v).toFixed(1)}`, after);
       LabUI.bindSlider(root, 'wCtl', state, 'w', (v) => `${(+v).toFixed(1)} nm`, after);
-      root.querySelector('#shotBtn').addEventListener('click', () => {
-        sim.shots += 1;
-        if (Math.random() < transT()) sim.passed += 1;
-        onChange();
-      });
+      root.querySelector('#shotBtn').addEventListener('click', shotOne);
     } else {
       LabUI.bindSlider(root, 'gapCtl', state, 'gap', (v) => `${(+v).toFixed(2)} nm`, () => { layout(); onChange(); });
       LabUI.bindSlider(root, 'tipCtl', state, 'tipX', (v) => `${(+v).toFixed(1)}`, () => { layout(); onChange(); });
     }
-    const run = root.querySelector('#runBtn');
-    const label = state.mode === 'packet' ? '▶ 파동 발사' : '▶ 표면 스캔';
-    run.addEventListener('click', () => {
-      if (state.mode === 'packet' && sim.phase !== 'in') reset();
-      state.running = !state.running;
-      run.textContent = state.running ? '진행 중…' : label;
-      run.classList.toggle('run', state.running);
-      onChange();
-    });
+    root.querySelector('#runBtn').addEventListener('click', toggleRun);
     root.querySelector('#resetBtn').addEventListener('click', () => {
       reset();
-      run.textContent = label;
-      run.classList.remove('run');
-      onChange();
+      applyChange();
     });
   }
 

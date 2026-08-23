@@ -16,6 +16,14 @@ const SpectrumScene = (() => {
   let tube, tubeMat, spectrumPlane, spectrumTex, levelPlane, levelTex, glowLamp;
   let placed = {};
 
+  /* ── 화면에서 직접 만지는 것들 ─────────────────── */
+  let canvasEl = null;      // 끌기 중 카메라를 잠글 때 쓴다
+  let glowLayer = null;     // 이름표가 하얗게 번지지 않도록 제외시킨다
+  let onChangeCb = null;    // 3D 에서 조작해도 측정값·그래프가 갱신되도록
+  let stepVolt = null, voltTag = null, powerTag = null, gasTag = null;
+  let powerSw = null;       // 손으로 누르는 전원 스위치
+  let levelDrag = null;     // 준위 그림에서 끌어내리는 중
+
   const state = {
     gas: 'H',
     voltage: 0.7,     // 방전 전압 (0~1)
@@ -87,6 +95,8 @@ const SpectrumScene = (() => {
 
     const glow = new (B().GlowLayer)('glowSp', scene);
     glow.intensity = 0.9;
+    glowLayer = glow;
+    canvasEl = canvas;
 
     buildTable();
     buildTube();
@@ -94,11 +104,13 @@ const SpectrumScene = (() => {
     buildSpectrum();
     buildLevels();
     buildPlaceholders();
+    buildHands();
+    setupPointer(canvas);
 
     glow.addExcludedMesh(spectrumPlane);
     glow.addExcludedMesh(levelPlane);
     // 교과서 그림 액자 (배경 소품)
-    LabUI.addPoster(scene, '../assets/thumbs/spectrum.jpg', { x: -8, y: 0, z: 5.5, ry: 0.3 });
+    LabUI.addPoster(scene, '../assets/thumbs/spectrum.jpg', { x: -11, y: 0, z: -3 });
 
     resetTools();
     return scene;
@@ -178,6 +190,18 @@ const SpectrumScene = (() => {
     led.material = lm;
     led.parent = g;
     g._led = lm;
+
+    // 손으로 누르는 전원 스위치 — 이름표에 가리지 않도록 윗면에 올린다
+    const swBase = B().MeshBuilder.CreateBox('spSwitchBase', { width: 1.5, height: 0.14, depth: 1.2 }, scene);
+    swBase.position.set(-7, 2.44, -0.45);
+    swBase.material = mat('spSwitchBaseMat', '#20262f');
+    swBase.parent = g;
+
+    powerSw = B().MeshBuilder.CreateBox('spSwitch', { width: 1.1, height: 0.34, depth: 0.9 }, scene);
+    powerSw.position.set(-7, 2.62, -0.45);
+    powerSw.material = mat('spSwitchMat', '#c0392b', '#ffb0a0', 48);
+    powerSw.parent = g;
+
     spPowerG = g;
   }
   let spPowerG;
@@ -275,12 +299,30 @@ const SpectrumScene = (() => {
     spectrumTex.update();
   }
 
+  /* ── 에너지 준위 그림의 자리 ──────────────────
+     오른쪽 «준위 선»은 −13.6/n² 에 비례한 실제 높이라 위로 갈수록 촘촘해진다.
+     그래서 손으로 누를 자리는 왼쪽에 고르게 벌린 «이름표(칩)»로 따로 둔다.   */
+  const LV_X = 7.6, LV_Y = 3.02, LV_Z = -5.6; // 실험대 앞쪽에 세워 둔 준위 판
+  const LV_PW = 6.3, LV_PH = 5.76;            // 판의 크기 (월드)
+  const LV_W = 420, LV_H = 384;               // 텍스처 크기 (월드 1 단위 = 66.7 px)
+  const LV_PPU = LV_W / LV_PW;
+  const LV_TOP = 52, LV_BOT = 316;            // n=∞ · n=1 준위 선의 세로 자리
+  const LINE_X0 = 192, LINE_X1 = 372;         // 준위 선의 좌우 끝
+  const CHIP_X0 = 14, CHIP_X1 = 168, CHIP_H = 32;
+  const CHIP_TOP = 62, CHIP_GAP = 44;         // 맨 위가 n=6, 아래로 한 칸씩
+  const ARROW_X = 250;                        // 전이 화살표가 놓이는 자리
+
+  /** n 준위 선의 세로 자리 — 에너지에 비례 (n=1 이 맨 아래) */
+  function levelY(n) { return LV_TOP + (levelE(n) / -RY) * (LV_BOT - LV_TOP); }
+  /** n 이름표(칩)의 세로 자리 — 손으로 누르기 쉽게 고르게 벌린다 */
+  function chipY(n) { return CHIP_TOP + (6 - n) * CHIP_GAP; }
+
   /** 에너지 준위 그림 */
   function buildLevels() {
-    levelPlane = B().MeshBuilder.CreatePlane('spLevels', { width: 7.0, height: 6.4 }, scene);
-    levelPlane.position.set(8.6, 4.2, 0.6);
+    levelPlane = B().MeshBuilder.CreatePlane('spLevels', { width: LV_PW, height: LV_PH }, scene);
+    levelPlane.position.set(LV_X, LV_Y, LV_Z);
     levelPlane.rotation.y = Math.PI;
-    levelTex = new (B().DynamicTexture)('spLevelTex', { width: 420, height: 384 }, scene, true);
+    levelTex = new (B().DynamicTexture)('spLevelTex', { width: LV_W, height: LV_H }, scene, true);
     const m = new (B().StandardMaterial)('spLevelMat', scene);
     m.diffuseTexture = levelTex;
     m.emissiveTexture = levelTex;
@@ -289,78 +331,360 @@ const SpectrumScene = (() => {
     m.specularColor = new (B().Color3)(0, 0, 0);
     m.backFaceCulling = false;
     levelPlane.material = m;
+
+    // 실험대에 세워 둔 게시판처럼 보이도록 받침을 둔다.
+    // 판(z = LV_Z)보다 «뒤»에 두어야 판 아래쪽의 테두리와 안내 글을 가리지 않는다.
+    levelStand = B().MeshBuilder.CreateBox('spLevelStand',
+      { width: LV_PW * 0.62, height: 0.28, depth: 0.8 }, scene);
+    levelStand.position.set(LV_X, 0.14, LV_Z + 0.5);
+    levelStand.material = mat('spLevelStandMat', '#2b323c', '#6b7686', 48);
+  }
+  let levelStand;
+
+  /** 준위 이름표 — 여기를 눌러 전이를 고른다 */
+  function drawChip(ctx, n, isH, isL) {
+    const cy = chipY(n), w = CHIP_X1 - CHIP_X0, ty = cy - CHIP_H / 2;
+    ctx.fillStyle = isH ? '#6b4e0c' : isL ? '#173a63' : '#1b2432';
+    ctx.fillRect(CHIP_X0, ty, w, CHIP_H);
+    ctx.strokeStyle = isH ? '#ffd84a' : isL ? '#5aa9ff' : '#3c4756';
+    ctx.lineWidth = (isH || isL) ? 2.6 : 1.4;
+    ctx.strokeRect(CHIP_X0, ty, w, CHIP_H);
+
+    ctx.fillStyle = (isH || isL) ? '#ffffff' : '#cfe0f2';
+    ctx.font = 'bold 17px sans-serif';
+    ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+    ctx.fillText(`n=${n}`, CHIP_X0 + 11, cy + 1);
+    ctx.fillStyle = (isH || isL) ? '#e8eef6' : '#9fb0c2';
+    ctx.font = '14px sans-serif';
+    ctx.textAlign = 'right';
+    ctx.fillText(`${levelE(n).toFixed(2)} eV`, CHIP_X1 - 11, cy + 1);
   }
 
   function drawLevels() {
     const ctx = levelTex.getContext();
-    ctx.clearRect(0, 0, 420, 384);
-    ctx.translate(420, 0); ctx.scale(-1, 1);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, LV_W, LV_H);
+    ctx.translate(LV_W, 0); ctx.scale(-1, 1);   // 판을 돌려 쓰므로 좌우를 뒤집어 그린다
     ctx.fillStyle = '#0b1018ee';
-    ctx.fillRect(0, 0, 420, 384);
+    ctx.fillRect(0, 0, LV_W, LV_H);
     ctx.strokeStyle = '#3c4756'; ctx.lineWidth = 2;
-    ctx.strokeRect(3, 3, 414, 378);
+    ctx.strokeRect(3, 3, LV_W - 6, LV_H - 6);
 
     ctx.fillStyle = '#cfe0f2';
     ctx.font = 'bold 20px "Noto Sans KR", sans-serif';
     ctx.textAlign = 'center'; ctx.textBaseline = 'top';
-    ctx.fillText('수소 원자의 에너지 준위', 210, 12);
+    ctx.fillText('수소 원자의 에너지 준위', LV_W / 2, 9);
 
-    // n=1 을 아래, n=∞ 를 위에 두고 −13.6/n² 에 비례하게 배치
-    const top = 54, bot = 330;
-    const yOf = (n) => {
-      const e = levelE(n);            // −13.6 ~ 0
-      return bot + (e / -RY) * (bot - top) * -1;   // e=−13.6 → bot, e=0 → top
-    };
-
-    for (let n = 1; n <= 6; n++) {
-      const y = yOf(n);
-      ctx.strokeStyle = '#5b6675';
-      ctx.lineWidth = 2;
-      ctx.beginPath(); ctx.moveTo(70, y); ctx.lineTo(330, y); ctx.stroke();
-      ctx.fillStyle = '#9fb0c2';
-      ctx.font = 'bold 15px sans-serif';
-      ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
-      ctx.fillText(`n=${n}`, 62, y);
-      ctx.textAlign = 'left';
-      ctx.fillText(`${levelE(n).toFixed(2)} eV`, 338, y);
-    }
-    // n = ∞
-    ctx.strokeStyle = '#8e9bad';
+    // n = ∞ — 전자가 아주 멀어진 상태 (0 eV)
+    ctx.strokeStyle = '#8e9bad'; ctx.lineWidth = 2;
     ctx.setLineDash([5, 4]);
-    ctx.beginPath(); ctx.moveTo(70, top); ctx.lineTo(330, top); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(LINE_X0, LV_TOP); ctx.lineTo(LINE_X1, LV_TOP); ctx.stroke();
     ctx.setLineDash([]);
     ctx.fillStyle = '#9fb0c2';
-    ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
-    ctx.fillText('n=∞', 62, top);
-    ctx.textAlign = 'left';
-    ctx.fillText('0 eV', 338, top);
+    ctx.font = 'bold 14px sans-serif';
+    ctx.textAlign = 'right'; ctx.textBaseline = 'bottom';
+    ctx.fillText('n=∞ · 0 eV', LINE_X1, LV_TOP - 5);
 
-    // 고른 전이 화살표
-    if (state.gas === 'H') {
-      const yH = yOf(state.nHigh), yL = yOf(state.nLow);
-      const nm = transitionLambda(state.nHigh, state.nLow);
-      ctx.strokeStyle = rgbCss(nm, 1);
-      ctx.lineWidth = 3.4;
-      ctx.beginPath(); ctx.moveTo(200, yH); ctx.lineTo(200, yL); ctx.stroke();
-      // 화살촉 (아래로)
-      ctx.fillStyle = rgbCss(nm, 1);
-      ctx.beginPath();
-      ctx.moveTo(200, yL); ctx.lineTo(193, yL - 12); ctx.lineTo(207, yL - 12);
-      ctx.closePath(); ctx.fill();
+    // 준위 선 · 이름표 · 둘을 이어 주는 점선
+    for (let n = 6; n >= 1; n--) {
+      const ly = levelY(n), cy = chipY(n);
+      const isH = n === state.nHigh, isL = n === state.nLow;
 
-      ctx.fillStyle = '#e8eef6';
-      ctx.font = 'bold 16px sans-serif';
-      ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
-      ctx.fillText(`${nm.toFixed(1)} nm`, 212, (yH + yL) / 2);
+      ctx.strokeStyle = '#3c4756'; ctx.lineWidth = 1;
+      ctx.setLineDash([3, 3]);
+      ctx.beginPath(); ctx.moveTo(CHIP_X1, cy); ctx.lineTo(LINE_X0, ly); ctx.stroke();
+      ctx.setLineDash([]);
+
+      ctx.strokeStyle = isH ? '#ffd84a' : isL ? '#5aa9ff' : '#5b6675';
+      ctx.lineWidth = (isH || isL) ? 3.4 : 2;
+      ctx.beginPath(); ctx.moveTo(LINE_X0, ly); ctx.lineTo(LINE_X1, ly); ctx.stroke();
+
+      drawChip(ctx, n, isH, isL);
     }
 
+    // 고른 전이 화살표 — 전자가 아래 준위로 떨어지는 길
+    const yH = levelY(state.nHigh), yL = levelY(state.nLow);
+    const nm = transitionLambda(state.nHigh, state.nLow);
+    const col = rgbCss(nm, 1);
+    const head = Math.max(5, Math.min(11, (yL - yH) * 0.7));
+    ctx.strokeStyle = col; ctx.lineWidth = 3.4;
+    ctx.beginPath(); ctx.moveTo(ARROW_X, yH); ctx.lineTo(ARROW_X, yL); ctx.stroke();
+    ctx.lineWidth = 2.6;                       // 짧은 화살표도 보이도록 양 끝에 턱을 둔다
+    ctx.beginPath(); ctx.moveTo(ARROW_X - 9, yH); ctx.lineTo(ARROW_X + 9, yH); ctx.stroke();
+    ctx.fillStyle = col;
+    ctx.beginPath();
+    ctx.moveTo(ARROW_X, yL); ctx.lineTo(ARROW_X - 7, yL - head); ctx.lineTo(ARROW_X + 7, yL - head);
+    ctx.closePath(); ctx.fill();
+
+    // 파장 이름표 — n=2 와 n=1 사이의 빈 자리에 놓아 선과 겹치지 않게 한다
+    const label = `λ = ${nm.toFixed(1)} nm`;
+    ctx.font = 'bold 15px sans-serif';
+    const bw = ctx.measureText(label).width + 22, bx = 330 - bw / 2;
+    ctx.fillStyle = '#0b1018f4';
+    ctx.fillRect(bx, 239, bw, 26);
+    ctx.strokeStyle = col; ctx.lineWidth = 1.6;
+    ctx.strokeRect(bx, 239, bw, 26);
+    ctx.fillStyle = '#e8eef6';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(label, 330, 253);
+
+    ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+    ctx.fillStyle = '#e8eef6';
+    ctx.font = 'bold 14px "Noto Sans KR", sans-serif';
+    ctx.fillText(`n=${state.nHigh} → n=${state.nLow} · ${seriesName(state.nLow)}`, LV_W / 2, 328);
+    ctx.font = '12px "Noto Sans KR", sans-serif';
+    ctx.fillStyle = state.gas === 'H' ? '#8e9bad' : '#e8a94a';
+    ctx.fillText(state.gas === 'H'
+      ? '노랑 = 시작 준위 · 파랑 = 도착 준위'
+      : `지금 방전관은 ${GASES[state.gas].name} — 이 그림은 수소 기준입니다`, LV_W / 2, 348);
     ctx.fillStyle = '#8e9bad';
-    ctx.font = '14px "Noto Sans KR", sans-serif';
-    ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
-    ctx.fillText('전자가 아래 준위로 떨어지며 빛을 낸다', 210, 374);
+    ctx.font = '11px "Noto Sans KR", sans-serif';
+    ctx.fillText('준위를 누르거나 위에서 아래로 끌어내리세요', LV_W / 2, 366);
 
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     levelTex.update();
+  }
+
+  /* ══ 화면에서 직접 조작 ═══════════════════════
+     · 전원 장치의 빨간 스위치를 눌러 방전관을 켜고 끈다
+     · 스위치 앞의 ＋ / － 로 방전 전압을 5 %씩 맞춘다
+     · 기체 방전관을 누르면 다른 기체 방전관으로 갈아 끼운다
+     · 에너지 준위 그림에서 준위를 누르거나 위에서 아래로 끌어내려 전이를 고른다  */
+
+  /** 글씨를 그려 넣은 판 — 이름표 겸 3D 단추로 쓴다 */
+  function makePlate(name, w, h) {
+    const W = Math.round(w * 110), H = Math.round(h * 110);
+    const pl = B().MeshBuilder.CreatePlane(name, { width: w, height: h }, scene);
+    pl.rotation.y = Math.PI;              // 다른 판들과 같이 카메라 쪽을 보게
+    const tex = new (B().DynamicTexture)(name + 'T', { width: W, height: H }, scene, true);
+    tex.hasAlpha = true;
+    const m = new (B().StandardMaterial)(name + 'M', scene);
+    m.diffuseTexture = tex; m.opacityTexture = tex; m.emissiveTexture = tex;
+    m.emissiveColor = new (B().Color3)(1, 1, 1);
+    m.specularColor = new (B().Color3)(0, 0, 0);
+    m.backFaceCulling = false;
+    pl.material = m;
+    pl._tex = tex; pl._w = W; pl._h = H;
+    if (glowLayer && glowLayer.addExcludedMesh) glowLayer.addExcludedMesh(pl);
+    return pl;
+  }
+
+  /** 판에 글씨를 다시 그린다 — 내용이 그대로면 다시 그리지 않는다 */
+  function paintPlate(pl, text, on, hex) {
+    if (!pl || !pl._tex) return;
+    const key = `${text}|${on ? 1 : 0}|${hex || ''}`;
+    if (pl._last === key) return;
+    pl._last = key;
+    const W = pl._w, H = pl._h;
+    const ctx = pl._tex.getContext();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+    ctx.translate(W, 0); ctx.scale(-1, 1);   // 판을 돌려 쓰므로 좌우를 뒤집어 그린다
+    ctx.fillStyle = on ? (hex || '#2f6ad0') : '#1b2432';
+    ctx.fillRect(2, 2, W - 4, H - 4);
+    ctx.strokeStyle = on ? '#ffffff' : '#7a8aa0';
+    ctx.lineWidth = 4;
+    ctx.strokeRect(5, 5, W - 10, H - 10);
+    let fs = Math.round(H * 0.46);
+    const font = (s) => `bold ${s}px "Noto Sans KR", sans-serif`;
+    ctx.font = font(fs);
+    while (fs > 11 && ctx.measureText(text).width > W - 26) { fs -= 2; ctx.font = font(fs); }
+    ctx.fillStyle = on ? '#ffffff' : '#c8d4e4';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(text, W / 2, H / 2);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    pl._tex.update();
+  }
+
+  /** 손으로 만지는 것들을 만든다 (자리는 layoutHands 에서 잡는다) */
+  function buildHands() {
+    stepVolt = LabUI.makeStepper(scene, 'Volt');
+    voltTag = makePlate('spVoltTag', 2.9, 0.66);
+    powerTag = makePlate('spPowerTag', 3.2, 0.62);
+    gasTag = makePlate('spGasTag', 3.8, 0.74);
+  }
+
+  /** 단추·이름표의 자리와 표시를 다시 잡는다 (update 에서 매번 부른다) */
+  function layoutHands() {
+    const pw = allPlaced() && !!placed.power;
+    if (stepVolt) { stepVolt.place(-7, 1.35, -3.2, 1.0); stepVolt.setEnabled(pw); }
+    if (voltTag) {
+      voltTag.position.set(-7, 2.40, -3.2);
+      voltTag.setEnabled(pw);
+      paintPlate(voltTag, `방전 전압 ${(state.voltage * 100).toFixed(0)} %`, true, '#b8791c');
+    }
+    if (powerTag) {
+      powerTag.position.set(-7, 0.35, -3.2);
+      powerTag.setEnabled(pw);
+      paintPlate(powerTag, state.on ? '전원 ON — 누르면 끔' : '전원 OFF — 누르면 켬',
+        !!state.on, '#2f8f6a');
+    }
+    if (powerSw) powerSw.rotation.x = state.on ? -0.30 : 0.30;   // 켜면 앞쪽이 눌린다
+
+    const tb = allPlaced() && !!placed.tube;
+    if (gasTag) {
+      gasTag.position.set(0, 0.62, -2.6);
+      gasTag.setEnabled(tb);
+      paintPlate(gasTag, `${GASES[state.gas].name} — 누르면 교체`, true, GASES[state.gas].color);
+    }
+  }
+
+  /** 3D 에서 값을 바꾼 뒤 — 측정값·그래프와 아래 조작 막대를 함께 맞춘다 */
+  function applyChange() {
+    if (onChangeCb) onChangeCb();   // 껍데기가 update() 까지 불러 준다
+    else update();
+    syncPanel();
+  }
+
+  /** 아래 조작 막대를 3D 에서 바꾼 값에 맞춘다 */
+  function syncPanel() {
+    const sl = document.querySelector('#voltage');
+    const out = document.querySelector('#voltageOut');
+    if (sl) sl.value = state.voltage;
+    if (out) out.textContent = `${(state.voltage * 100).toFixed(0)} %`;
+    document.querySelectorAll('[data-gas]').forEach((b) =>
+      b.classList.toggle('on', b.getAttribute('data-gas') === state.gas));
+    document.querySelectorAll('[data-nhigh]').forEach((b) =>
+      b.classList.toggle('on', +b.getAttribute('data-nhigh') === state.nHigh));
+    document.querySelectorAll('[data-nlow]').forEach((b) =>
+      b.classList.toggle('on', +b.getAttribute('data-nlow') === state.nLow));
+    const btn = document.querySelector('#onBtn');
+    if (btn) {
+      btn.textContent = state.on ? 'ON' : 'OFF';
+      btn.classList.toggle('off', !state.on);
+    }
+  }
+
+  function hint(t) {
+    if (typeof Lab !== 'undefined' && Lab.showHint) Lab.showHint(t);
+  }
+
+  /** 방전관을 켜고 끈다 */
+  function togglePower() { state.on = !state.on; applyChange(); }
+
+  /** 방전 전압을 5 %씩 바꾼다 (아래 슬라이더와 같은 범위) */
+  function bumpVolt(d) {
+    const v = Math.max(0.1, Math.min(1.0, +(state.voltage + d * 0.05).toFixed(2)));
+    if (Math.abs(v - state.voltage) < 1e-9) return;
+    state.voltage = v;
+    applyChange();
+  }
+
+  /** 다음 기체 방전관으로 갈아 끼운다 */
+  const GAS_ORDER = ['H', 'He', 'Ne'];
+  function nextGas() {
+    state.gas = GAS_ORDER[(GAS_ORDER.indexOf(state.gas) + 1) % GAS_ORDER.length];
+    applyChange();
+  }
+
+  /** 두 준위로 전이를 정한다 — 위쪽이 시작, 아래쪽이 도착 */
+  function setTransition(a, b) {
+    const hi = Math.max(a, b), lo = Math.min(a, b);
+    if (hi === lo) return;
+    if (hi < 3) { hint('시작 준위는 n=3 부터 고를 수 있습니다.'); return; }
+    if (lo > 3) { hint('도착 준위는 n=3 까지 고를 수 있습니다.'); return; }
+    const nh = Math.max(3, Math.min(6, hi));
+    const nl = Math.max(1, Math.min(3, lo));
+    if (nh <= nl) return;
+    if (nh === state.nHigh && nl === state.nLow) return;
+    state.nHigh = nh; state.nLow = nl;
+    applyChange();
+  }
+
+  /** 준위를 한 번 눌렀을 때 — 위쪽은 시작 준위로, 아래쪽은 도착 준위로 삼는다 */
+  function clickLevel(n) {
+    if (n >= 4) setTransition(n, state.nLow);
+    else if (n <= 2) setTransition(state.nHigh, n);
+    else setTransition(state.nHigh > 3 ? state.nHigh : 4, 3);
+  }
+
+  /** 화면 위 한 점을 주어진 평면 위의 세계 좌표로 바꾼다 */
+  function planePoint(origin, normal) {
+    const ray = scene.createPickingRay(scene.pointerX, scene.pointerY, null, camera);
+    const plane = B().Plane.FromPositionAndNormal(origin, normal);
+    const d = ray.intersectsPlane(plane);
+    if (d === null || d < 0) return null;   // 옆에서 보아 면과 나란하면 무시한다
+    return ray.origin.add(ray.direction.scale(d));
+  }
+
+  /** 손끝이 가리키는 준위 (1~6) — 준위 그림 밖이면 null
+      왼쪽 이름표 칸은 고르게 벌려 두었고, 오른쪽 준위 선은 −13.6/n² 자리에 있어
+      세로 자리가 서로 다르다. 누른 쪽에 맞는 자를 써야 눌린 준위가 어긋나지 않는다. */
+  function levelAtPointer() {
+    const pt = planePoint(new (B().Vector3)(0, 0, LV_Z), new (B().Vector3)(0, 0, 1));
+    if (!pt) return null;
+    const cx = (pt.x - (LV_X - LV_PW / 2)) * LV_PPU;          // 그림을 그린 좌표와 같은 자리
+    const cy = ((LV_Y + LV_PH / 2) - pt.y) * LV_PPU;
+    if (cx < 0 || cx > LV_W) return null;
+    if (cy < CHIP_TOP - 28 || cy > chipY(1) + 40) return null;   // 제목·아래 안내 글은 뺀다
+    if (cx > (CHIP_X1 + LINE_X0) / 2) {          // 오른쪽 — 준위 «선» 의 실제 높이로 고른다
+      let best = 1, bd = Infinity;
+      for (let n = 1; n <= 6; n++) {
+        const d = Math.abs(cy - levelY(n));
+        if (d < bd) { bd = d; best = n; }
+      }
+      return best;
+    }
+    const k = Math.round((cy - CHIP_TOP) / CHIP_GAP);          // 왼쪽 — 이름표 칸
+    return 6 - Math.max(0, Math.min(5, k));
+  }
+
+  /** 끌던 것을 놓아 준다 — 카메라 조작이 잠긴 채 남지 않게 한다.
+      끌던 손을 놓았을 때·«실험 다시하기» 를 눌렀을 때 모두 여기를 지난다. */
+  function releaseDrag() {
+    const d = levelDrag;
+    levelDrag = null;
+    if (d && camera) camera.attachControl(canvasEl, true);
+    return d;
+  }
+
+  function setupPointer(canvas) {
+    canvasEl = canvasEl || canvas;
+    // 캔버스 밖에서 손을 놓아도 카메라가 잠긴 채 남지 않게 한다
+    if (typeof window !== 'undefined' && window.addEventListener) {
+      window.addEventListener('pointerup', releaseDrag);
+      window.addEventListener('pointercancel', releaseDrag);
+    }
+    scene.onPointerObservable.add((pi) => {
+      const T = B().PointerEventTypes;
+      const mesh = pi.pickInfo && pi.pickInfo.pickedMesh;
+      const nm = mesh ? mesh.name : '';
+
+      if (pi.type === T.POINTERDOWN) {
+        if (!allPlaced()) return;          // 준비물을 다 놓기 전에는 만지지 못한다
+        // ── 방전 전압 ＋ · －
+        if (nm === 'btnAddVolt') { bumpVolt(+1); return; }
+        if (nm === 'btnSubVolt') { bumpVolt(-1); return; }
+        // ── 전원 스위치를 눌러 켜고 끄기
+        if (nm.indexOf('spSwitch') === 0 || nm === 'spPowerTag'
+            || nm === 'spPowerBox' || nm === 'spPowerLed') { togglePower(); return; }
+        // ── 방전관을 눌러 다른 기체로 갈아 끼우기
+        if (nm.indexOf('spTube') === 0 || nm.indexOf('spCap') === 0
+            || nm === 'spGlow' || nm === 'spGasTag') { nextGas(); return; }
+        // ── 준위 그림에서 전이 고르기 (누르기 · 끌어내리기)
+        if (nm === 'spLevels') {
+          const n = levelAtPointer();
+          if (n === null) return;
+          levelDrag = { from: n, cur: n, moved: false };
+          camera.detachControl();
+        }
+        return;
+      }
+
+      if (pi.type === T.POINTERMOVE && levelDrag) {
+        const n = levelAtPointer();
+        if (n === null || n === levelDrag.cur) return;
+        levelDrag.cur = n;
+        levelDrag.moved = true;
+        setTransition(levelDrag.from, n);
+        return;
+      }
+
+      if (pi.type === T.POINTERUP && levelDrag) {
+        const d = releaseDrag();
+        if (d && !d.moved) clickLevel(d.from);   // 끌지 않고 눌렀으면 그 준위 하나만 바꾼다
+      }
+    });
   }
 
   /* ── 배치 자리 ──────────────────────────────── */
@@ -388,6 +712,7 @@ const SpectrumScene = (() => {
 
   /* ══ 도구 배치 ═══════════════════════════════ */
   function resetTools() {
+    releaseDrag();   // 끌던 도중 «실험 다시하기» 를 눌러도 카메라가 잠긴 채 남지 않게
     placed = {};
     tools.forEach((t) => { placed[t.id] = false; });
     applyPlacement();
@@ -400,6 +725,7 @@ const SpectrumScene = (() => {
     spPowerG.setEnabled(!!placed.power);
     spectrumPlane.setEnabled(!!placed.spectro && !!placed.tube);
     levelPlane.setEnabled(!!placed.spectro);
+    levelStand.setEnabled(!!placed.spectro);
     Object.entries(holders).forEach(([id, h]) => h.setEnabled(!placed[id]));
     update();
   }
@@ -427,6 +753,7 @@ const SpectrumScene = (() => {
 
     if (placed.spectro && placed.tube) drawSpectrum();
     if (placed.spectro) drawLevels();
+    layoutHands();
   }
 
   function resetCamera() {
@@ -443,6 +770,16 @@ const SpectrumScene = (() => {
 
   function controlsHTML() {
     return `
+      <div class="control">
+        <div class="clabel">직접<br>조작</div>
+        <div class="cbody"><p class="hands-on">
+          전원 장치의 <b>빨간 스위치를 눌러</b> 방전관을 켜고 끄고,
+          그 앞의 <b>＋ · －</b> 로 방전 전압을 5 %씩 맞춥니다.
+          <b>방전관을 누르면</b> 다른 기체 방전관으로 갈아 끼워집니다.
+          오른쪽 <b>에너지 준위 그림에서 준위를 누르거나</b>,
+          위 준위에서 아래 준위로 <b>끌어내리면</b> 전이가 정해집니다.
+        </p></div>
+      </div>
       ${LabUI.opts('기체의<br>종류', 'gas', [
         { v: 'H', t: '수소' }, { v: 'He', t: '헬륨' }, { v: 'Ne', t: '네온' },
       ], state.gas, 1)}
@@ -461,6 +798,7 @@ const SpectrumScene = (() => {
   }
 
   function bindControls(root, onChange) {
+    onChangeCb = onChange;          // 3D 에서 직접 조작해도 측정값이 갱신되도록
     LabUI.bindOpts(root, 'gas', state, 'gas', onChange, String);
     LabUI.bindSlider(root, 'voltage', state, 'voltage', (v) => `${(v * 100).toFixed(0)} %`, onChange);
 

@@ -23,7 +23,7 @@ const StarlightScene = (() => {
   const M_P = 1.0073, M_N = 1.0087, M_HE = 4.0015;
   const U_MEV = 931.5;
 
-  let scene, camera;
+  let scene, camera, canvasRef;
   let star, prism, screenP, screenTex, fusionPlane, fusionTex;
   let placed = {};
 
@@ -71,6 +71,7 @@ const StarlightScene = (() => {
 
   /* ══ 장면 ═══════════════════════════════════ */
   function create(engine, canvas) {
+    canvasRef = canvas;             // 끌기 중 카메라를 잠갔다 풀 때 쓴다
     scene = new (B().Scene)(engine);
     scene.clearColor = B().Color4.FromHexString('#0a0e1aff');
 
@@ -102,10 +103,12 @@ const StarlightScene = (() => {
     buildFusion();
     buildProps();
     buildPlaceholders();
+    buildHands();
 
     // 교과서 그림 액자 (배경 소품)
-    LabUI.addPoster(scene, '../assets/thumbs/starlight.jpg', { x: -10, y: 0, z: 7, ry: 0.35 });
+    LabUI.addPoster(scene, '../assets/thumbs/starlight.jpg', { x: -13, y: 0, z: -4 });
 
+    setupPointer(canvas);
     resetTools();
     return scene;
   }
@@ -164,6 +167,9 @@ const StarlightScene = (() => {
   }
 
   const NM0 = 380, NM1 = 700;
+  // 스펙트럼 화면의 눈금 자리 — 3D 파장 커서도 같은 값을 써서 자리를 맞춘다
+  const SX0 = 60, SX1 = 860;          // 그림 안 좌·우 끝 (px)
+  const SCR_W = 8.5, SCR_TW = 900;    // 화면 판의 실제 폭 · 그림의 가로 픽셀
   const xNm = (nm, X0, X1) => X0 + ((nm - NM0) / (NM1 - NM0)) * (X1 - X0);
 
   /** 별 스펙트럼 + 후보 원소 방출선을 그린다 (해 보기 114쪽 (가)(나)) */
@@ -171,7 +177,7 @@ const StarlightScene = (() => {
     const ctx = screenTex.getContext();
     ctx.fillStyle = '#101820';
     ctx.fillRect(0, 0, 900, 480);
-    const X0 = 60, X1 = 860;
+    const X0 = SX0, X1 = SX1;
     // (가) 별의 흡수 스펙트럼: 무지개 + 검은 선
     ctx.fillStyle = '#e8ecf4';
     ctx.font = 'bold 26px "Noto Sans KR", sans-serif';
@@ -239,7 +245,9 @@ const StarlightScene = (() => {
     foot.position.y = 0.07;
     foot.material = mat('slPropSFM', '#2b3441');
     foot.parent = g;
-    g.position.set(-3, 0, -3);
+    // 빛이 지나는 길(z ≈ 0) 가까이에 세워 둔다.
+    // 앞줄(z = -4.8)의 원소 카드에 가리지 않도록 뒤로 물렸다.
+    g.position.set(-3, 0, -0.6);
     g.setEnabled(false);
     props.slitT = g;
   }
@@ -340,10 +348,343 @@ const StarlightScene = (() => {
     holders._spec = spec;
   }
 
+  /* ══ 화면에서 직접 조작 ═══════════════════════
+     · 핵융합 — 그림 앞의 ＋ / － 를 눌러 p-p 연쇄를 한 단계씩 넘긴다
+     · 수사대 — 앞줄의 «원소 카드»를 눌러 고르고, «판정» 판을 눌러 확인한다
+     · 스펙트럼 화면의 «파장 커서»를 옆으로 끌어 흡수선의 파장을 읽는다        */
+
+  let onChangeCb = null;              // 3D 에서 만져도 측정값·그래프가 갱신되도록
+  let stepStep = null, stepTag = null;
+  const cards = {};
+  let judgeTag = null, nextTag = null;
+  let cursorG = null, curBar = null, curTag = null;
+  let curDrag = null;
+  let cursorNm = 550;                 // 파장 커서가 가리키는 파장 (nm)
+
+  const SHELF_Z = -4.8;               // 앞줄 «조작 선반»의 가운데 깊이
+  const SHELF_X = 0.8;                // 선반의 가운데
+  // 선반을 «기본 시점의 시선에 수직»으로 눕힌다 (카메라 α = -π/2 + 0.3, 목표 (0,3,0)).
+  // 줄 위의 모든 자리가 카메라에서 같은 깊이에 놓이므로 카드가 원근 때문에
+  // 계단처럼 어긋나며 서로(그리고 아래 판정·다음 별 판을) 가리는 일이 없다.
+  const SHELF_DX = 0.9554, SHELF_DZ = 0.2955;     // 줄의 방향 (시선에 수직인 단위 벡터)
+  const shelfX = (u) => SHELF_X + u * SHELF_DX;
+  const shelfZ = (u) => SHELF_Z + u * SHELF_DZ;
+  const CARD_U = [-4.8, -2.4, 0, 2.4, 4.8];       // KEYS 차례대로 (카드 폭 2.0 · 사이 0.4)
+  const JUDGE_U = -1.75, NEXT_U = 1.75;           // 카드 줄 아래의 두 판 (폭 2.9 · 사이 0.6)
+  const STEP_U = 1.15;                            // ＋ / － 가 가운데에서 벌어진 거리
+  // 줄의 «높이» — 기본 시점(resetCamera 와 같은 값)에서 화면 좌표로 옮겨,
+  // 뒤에 선 큰 판(스펙트럼 화면 · 핵융합 그림)의 아래 모서리와 서로를
+  // 가리지 않도록 잡은 값이다. 선반이 판보다 5 만큼 앞에 있어 원근 때문에
+  // 화면에서는 훨씬 아래로 내려온다 — 값을 바꿀 때는 이 점을 함께 보아야 한다.
+  const CARD_Y = 1.72, JUDGE_Y = 0.40;            // 수사대 — 카드 줄 · 판정/다음 별 줄
+  const STEP_TAG_Y = 2.15, STEP_BTN_Y = 1.15;     // 핵융합 — 이름표 줄 · ＋/－ 줄
+
+  /** 글로우 레이어가 글씨를 하얗게 번지게 하지 않도록 빼 둔다 */
+  function noGlow(mesh) {
+    const ex = () => (scene.effectLayers || []).forEach((L) => {
+      if (L.addExcludedMesh) L.addExcludedMesh(mesh);
+    });
+    ex();
+    const once = () => { ex(); scene.onBeforeRenderObservable.removeCallback(once); };
+    scene.onBeforeRenderObservable.add(once);
+  }
+
+  /** 글씨를 그려 넣는 판 — 이름표 겸 3D 단추로 쓴다 */
+  function makePlate(name, w, h, billboard, ppu) {
+    const P = ppu || 120;
+    const W = Math.round(w * P), H = Math.round(h * P);
+    const pl = B().MeshBuilder.CreatePlane(name, { width: w, height: h }, scene);
+    const tex = new (B().DynamicTexture)(name + 'T', { width: W, height: H }, scene, true);
+    tex.hasAlpha = true;
+    const m = new (B().StandardMaterial)(name + 'M', scene);
+    m.diffuseTexture = tex; m.opacityTexture = tex; m.emissiveTexture = tex;
+    m.emissiveColor = new (B().Color3)(1, 1, 1);
+    m.specularColor = new (B().Color3)(0, 0, 0);
+    m.backFaceCulling = false;
+    pl.material = m;
+    pl._tex = tex; pl._w = W; pl._h = H;
+    if (billboard) pl.billboardMode = B().Mesh.BILLBOARDMODE_Y;
+    noGlow(pl);
+    return pl;
+  }
+
+  /** 판에 글씨를 다시 그린다 — 내용이 그대로면 다시 그리지 않는다 */
+  function paintPlate(pl, text, on, hex) {
+    if (!pl || !pl._tex) return;
+    const key = `${text}|${on ? 1 : 0}|${hex || ''}`;
+    if (pl._last === key) return;
+    pl._last = key;
+    const W = pl._w, H = pl._h;
+    const c = pl._tex.getContext();
+    c.clearRect(0, 0, W, H);
+    c.fillStyle = on ? (hex || '#2f6ad0') : '#1b2231';
+    c.fillRect(2, 2, W - 4, H - 4);
+    c.strokeStyle = on ? '#ffffff' : '#7a8aa0';
+    c.lineWidth = 4;
+    c.strokeRect(5, 5, W - 10, H - 10);
+    let fs = Math.round(H * 0.46);
+    const font = (s) => `bold ${s}px "Noto Sans KR", sans-serif`;
+    c.font = font(fs);
+    while (fs > 11 && c.measureText(text).width > W - 26) { fs -= 2; c.font = font(fs); }
+    c.fillStyle = on ? '#ffffff' : '#c8d4e4';
+    c.textAlign = 'center'; c.textBaseline = 'middle';
+    c.fillText(text, W / 2, H / 2);
+    pl._tex.update();
+  }
+
+  /** 원소 카드 — 이름과 «그 원소의 방출선»이 실제 파장 자리에 찍혀 있다 */
+  function makeCard(k) {
+    const pl = makePlate('slCard' + k, 2.0, 1.5, true, 140);
+    paintCard(pl, k);
+    return pl;
+  }
+
+  function paintCard(pl, k) {
+    if (!pl || !pl._tex) return;
+    const on = !!state.picked[k];
+    const key = `${k}|${on ? 1 : 0}`;
+    if (pl._last === key) return;
+    pl._last = key;
+    const el = ELEMENTS[k];
+    const W = pl._w, H = pl._h;          // 280 × 210
+    const c = pl._tex.getContext();
+    c.clearRect(0, 0, W, H);
+    c.fillStyle = on ? '#1d2c44' : '#141a24';
+    c.fillRect(2, 2, W - 4, H - 4);
+    c.strokeStyle = on ? el.hex : '#4a5568';
+    c.lineWidth = on ? 8 : 4;
+    c.strokeRect(7, 7, W - 14, H - 14);
+    // 원소 이름
+    c.fillStyle = on ? '#ffffff' : '#aebbcd';
+    c.font = 'bold 42px "Noto Sans KR", sans-serif';
+    c.textAlign = 'center'; c.textBaseline = 'middle';
+    c.fillText(el.name, W / 2, 42);
+    // 방출선 띠
+    const bx = 22, bw = W - 44, by = 70, bh = 64;
+    c.fillStyle = '#05070c';
+    c.fillRect(bx, by, bw, bh);
+    el.lines.forEach((nm) => {
+      const x = bx + ((nm - NM0) / (NM1 - NM0)) * bw;
+      const [r, g, b2] = waveHex(nm);
+      c.fillStyle = on ? `rgb(${r | 0},${g | 0},${b2 | 0})`
+        : `rgba(${r | 0},${g | 0},${b2 | 0},.45)`;
+      c.fillRect(x - 2, by, 4, bh);
+    });
+    // 파장 눈금
+    c.fillStyle = '#7c8ba2';
+    c.font = '15px sans-serif';
+    [400, 500, 600, 700].forEach((nm) => {
+      c.fillText(String(nm), bx + ((nm - NM0) / (NM1 - NM0)) * bw, 150);
+    });
+    // 안내
+    c.fillStyle = on ? el.hex : '#6b7a90';
+    c.font = 'bold 22px "Noto Sans KR", sans-serif';
+    c.fillText(on ? '고름 — 누르면 뺌' : '누르면 고름', W / 2, 186);
+    pl._tex.update();
+  }
+
+  /** 스펙트럼 화면 위를 오가는 파장 커서 (화면 판에 붙여 함께 움직인다) */
+  function buildCursor() {
+    cursorG = new (B().TransformNode)('slCursorG', scene);
+    cursorG.parent = screenP;
+    cursorG.position.set(0, 0, 0);
+
+    curBar = B().MeshBuilder.CreateBox('slCurBar',
+      { width: 0.12, height: 3.6, depth: 0.04 }, scene);
+    curBar.parent = cursorG;
+    curBar.position.set(0, 0.75, -0.07);       // 판의 «앞쪽»(-z)에 띄운다
+    curBar.material = emat('slCurBarM', '#ffd84a', 0.92);
+    noGlow(curBar);
+
+    curTag = makePlate('slCurTag', 2.0, 0.5, false);
+    curTag.parent = cursorG;
+    curTag.position.set(0, 2.62, -0.08);       // 손잡이 겸 파장 표시
+  }
+
+  /** 손으로 만지는 것들을 만든다 (자리는 layoutHands 에서 잡는다) */
+  function buildHands() {
+    stepStep = LabUI.makeStepper(scene, 'Step');
+    stepTag = makePlate('slStepTag', 5.6, 0.66, true);
+    KEYS.forEach((k) => { cards[k] = makeCard(k); });
+    judgeTag = makePlate('slJudgeTag', 2.9, 0.78, true);
+    nextTag = makePlate('slNextTag', 2.9, 0.78, true);
+    buildCursor();
+  }
+
+  /* ── 파장 ↔ 화면 판 위의 자리 ─────────────── */
+  function nmToLocalX(nm) {
+    const px = SX0 + ((nm - NM0) / (NM1 - NM0)) * (SX1 - SX0);
+    return (px / SCR_TW) * SCR_W - SCR_W / 2;
+  }
+  function localXToNm(lx) {
+    const px = ((lx + SCR_W / 2) / SCR_W) * SCR_TW;
+    return NM0 + ((px - SX0) / (SX1 - SX0)) * (NM1 - NM0);
+  }
+  /** 커서가 지금 흡수선 위에 있는가 */
+  function onAbsLine() {
+    if (!sim) return false;
+    return sim.answer.some((k) =>
+      ELEMENTS[k].lines.some((nm) => Math.abs(nm - cursorNm) <= 2.5));
+  }
+
+  function layoutCursor() {
+    if (!cursorG) return;
+    cursorG.position.x = nmToLocalX(cursorNm);
+    const hit = onAbsLine();
+    if (curBar && curBar._hit !== hit) {
+      curBar._hit = hit;
+      curBar.material.emissiveColor = B().Color3.FromHexString(hit ? '#69d98c' : '#ffd84a');
+    }
+    paintPlate(curTag, `${Math.round(cursorNm)} nm${hit ? ' · 흡수선' : ''}`,
+      hit, hit ? '#2f8f6a' : '#b8791c');
+  }
+
+  /** 단추·카드의 자리와 표시를 다시 잡는다 (layout 에서 매번 부른다) */
+  function layoutHands(all, det) {
+    const fus = !!all && !det;          // 핵융합 모드
+    const dec = !!all && !!det;         // 수사대 모드
+
+    if (stepStep) {
+      // ＋ 와 － 도 같은 줄에 놓아 둘이 같은 크기·높이로 보이게 한다
+      stepStep.add.position.set(shelfX(STEP_U), STEP_BTN_Y, shelfZ(STEP_U));
+      stepStep.sub.position.set(shelfX(-STEP_U), STEP_BTN_Y, shelfZ(-STEP_U));
+      stepStep.setEnabled(fus);
+    }
+    if (stepTag) {
+      stepTag.position.set(SHELF_X, STEP_TAG_Y, SHELF_Z);
+      stepTag.setEnabled(fus);
+      paintPlate(stepTag, `핵융합 ${state.fusionStep}단계 — ＋ 다음 · － 이전`, true, '#b8791c');
+    }
+
+    KEYS.forEach((k, i) => {
+      const c = cards[k];
+      if (!c) return;
+      c.position.set(shelfX(CARD_U[i]), CARD_Y, shelfZ(CARD_U[i]));
+      c.setEnabled(dec);
+      paintCard(c, k);
+    });
+    if (judgeTag) {
+      judgeTag.position.set(shelfX(JUDGE_U), JUDGE_Y, shelfZ(JUDGE_U));
+      judgeTag.setEnabled(dec);
+      paintPlate(judgeTag, '🎯 판정 — 눌러 확인', !!(sim && sim.judged), '#2f6ad0');
+    }
+    if (nextTag) {
+      nextTag.position.set(shelfX(NEXT_U), JUDGE_Y, shelfZ(NEXT_U));
+      nextTag.setEnabled(dec);
+      paintPlate(nextTag, '🔭 다음 별', false, '#2f8f6a');
+    }
+    // 커서도 배치가 끝난 수사대 모드에서만 손에 잡히게 한다
+    if (cursorG) cursorG.setEnabled(dec);
+    layoutCursor();
+  }
+
+  /** 3D 에서 만진 뒤 — 측정값·그래프와 아래 조작 막대를 함께 맞춘다 */
+  function applyChange() {
+    if (onChangeCb) onChangeCb();       // 껍데기가 update() 까지 불러 준다
+    else update();
+    syncPanel();
+  }
+
+  /** 아래 조작 막대의 단추를 3D 에서 바꾼 값에 맞춘다 */
+  function syncPanel() {
+    document.querySelectorAll('[data-elem]').forEach((b) => {
+      b.classList.toggle('on', !!state.picked[b.getAttribute('data-elem')]);
+    });
+    document.querySelectorAll('[data-fusionStep]').forEach((b) => {
+      b.classList.toggle('on', +b.getAttribute('data-fusionStep') === state.fusionStep);
+    });
+  }
+
+  /** 핵융합 단계를 한 칸 넘긴다 (아래 단추와 같은 1~3 범위) */
+  function bumpStep(d) {
+    const v = Math.max(1, Math.min(3, state.fusionStep + d));
+    if (v === state.fusionStep) return;
+    state.fusionStep = v;
+    applyChange();
+  }
+
+  /** 원소 카드를 골랐다 뺐다 한다 */
+  function toggleElem(k) {
+    if (!ELEMENTS[k]) return;
+    state.picked[k] = state.picked[k] ? 0 : 1;
+    if (sim) sim.judged = false;
+    applyChange();
+  }
+
+  /** 고른 조합이 흡수선을 «빠짐없이, 남김없이» 설명하는지 본다 */
+  function judge() {
+    if (!sim) return;
+    const chosen = KEYS.filter((k) => state.picked[k]);
+    sim.judged = true;
+    sim.correct = chosen.length === sim.answer.length &&
+      sim.answer.every((k) => chosen.includes(k));
+  }
+
+  /** 화면 위 한 점을 스펙트럼 판 «안쪽 좌표»의 x 로 바꾼다 */
+  function cursorLocalX() {
+    if (!screenP) return null;
+    const ray = scene.createPickingRay(scene.pointerX, scene.pointerY, null, camera);
+    const n = screenP.getDirection(new (B().Vector3)(0, 0, -1));
+    const plane = B().Plane.FromPositionAndNormal(screenP.position, n);
+    const d = ray.intersectsPlane(plane);
+    if (d === null || d < 0) return null;      // 옆에서 보아 판과 나란하면 무시
+    const pt = ray.origin.add(ray.direction.scale(d));
+    const inv = B().Matrix.Invert(screenP.getWorldMatrix());
+    return B().Vector3.TransformCoordinates(pt, inv).x;
+  }
+
+  function setupPointer(canvas) {
+    scene.onPointerObservable.add((pi) => {
+      const T = B().PointerEventTypes;
+      const mesh = pi.pickInfo && pi.pickInfo.pickedMesh;
+      const nm = mesh ? mesh.name : '';
+
+      if (pi.type === T.POINTERDOWN) {
+        if (!allPlaced() || !sim) return;
+        if (state.mode !== 'detective') {
+          // ── 핵융합: ＋ 다음 단계 · － 이전 단계
+          if (nm === 'btnAddStep') bumpStep(+1);
+          else if (nm === 'btnSubStep') bumpStep(-1);
+          return;
+        }
+        // ── 수사대: 원소 카드 고르기 · 판정 · 다음 별
+        if (nm.indexOf('slCard') === 0) { toggleElem(nm.slice(6)); return; }
+        if (nm === 'slJudgeTag') { judge(); applyChange(); return; }
+        if (nm === 'slNextTag') { reset(); applyChange(); return; }
+        // ── 파장 커서 집어 들기 (누른 순간의 어긋남을 빼 두어 튀지 않게)
+        if (nm === 'slCurBar' || nm === 'slCurTag') {
+          const lx = cursorLocalX();
+          curDrag = { dx: lx === null ? 0 : cursorG.position.x - lx };
+          camera.detachControl();
+        }
+        return;
+      }
+
+      if (pi.type === T.POINTERMOVE) {
+        if (!curDrag) return;
+        const lx = cursorLocalX();
+        if (lx === null) return;
+        // 끄는 동안은 커서와 손잡이 글씨만 따라오게 한다 (그림은 손을 놓을 때 한 번)
+        cursorNm = Math.max(NM0, Math.min(NM1, localXToNm(lx + curDrag.dx)));
+        layoutCursor();
+        return;
+      }
+
+      if (pi.type === T.POINTERUP && curDrag) {
+        curDrag = null;
+        camera.attachControl(canvas, true);
+        applyChange();
+      }
+    });
+  }
+
   /* ══ 도구 배치 ═══════════════════════════════ */
   function resetTools() {
     placed = {};
     tools.forEach((t) => { placed[t.id] = false; });
+    // 커서를 끌던 도중에 «다시 배치» 를 눌러도 카메라가 잠긴 채로 남지 않게 한다
+    if (curDrag && camera && canvasRef) camera.attachControl(canvasRef, true);
+    curDrag = null;
     applyPlacement();
   }
   function placeTool(id) { placed[id] = true; applyPlacement(); }
@@ -380,6 +721,7 @@ const StarlightScene = (() => {
     const all = allPlaced();
     const det = state.mode === 'detective';
     const beam = scene.getMeshByName('slBeam');
+    layoutHands(all, det);      // 3D 단추·원소 카드·파장 커서
 
     // 준비 단계 — 놓은 도구부터 하나씩 나타난다
     if (!all) {
@@ -427,7 +769,7 @@ const StarlightScene = (() => {
   }
 
   /* ══ 컨트롤 ═════════════════════════════════ */
-  const guide = '별 스펙트럼의 검은 흡수선과 원소의 방출선 위치를 대조하세요. 흡수선을 전부 설명하는 원소 조합이 정답입니다!';
+  const guide = '앞줄의 <b>원소 카드를 눌러</b> 고르고 <b>파장 커서를 끌어</b> 흡수선의 파장을 읽어 보세요. 흡수선을 전부 설명하는 원소 조합이 정답입니다!';
   const prepGuide = '점선 자리에 별·슬릿·프리즘·스펙트럼 표를 끌어다 놓아 관측을 준비하세요.';
 
   function controlsHTML() {
@@ -441,6 +783,14 @@ const StarlightScene = (() => {
       ).join('');
       return `
         ${modeBtns}
+        <div class="control">
+          <div class="clabel">직접<br>조작</div>
+          <div class="cbody"><p class="hands-on">
+            앞줄의 <b>원소 카드를 누르면</b> 골라지고 다시 누르면 빠집니다.
+            <b>«판정» 판</b>을 눌러 확인하고 <b>«다음 별»</b>로 새 사건을 받습니다.
+            스펙트럼 화면의 <b>노란 파장 커서를 옆으로 끌면</b> 흡수선의 파장을 읽을 수 있습니다.
+          </p></div>
+        </div>
         <div class="control">
           <div class="clabel">대기 원소<br>고르기</div>
           <div class="cbody"><div class="opt-grid">${elemBtns}</div></div>
@@ -456,6 +806,12 @@ const StarlightScene = (() => {
     }
     return `
       ${modeBtns}
+      <div class="control">
+        <div class="clabel">직접<br>조작</div>
+        <div class="cbody"><p class="hands-on">
+          그림 앞의 <b>＋ · －</b> 를 눌러 p-p 연쇄를 <b>한 단계씩 넘기고</b> 되돌립니다.
+        </p></div>
+      </div>
       ${LabUI.opts('핵융합 단계', 'fusionStep', [
         { v: 1, t: '1단계' }, { v: 2, t: '2단계' }, { v: 3, t: '3단계' },
       ], state.fusionStep, 1)}
@@ -466,6 +822,7 @@ const StarlightScene = (() => {
   }
 
   function bindControls(root, onChange) {
+    onChangeCb = onChange;          // 3D 에서 직접 조작해도 측정값이 갱신되도록
     root.querySelectorAll('[data-mode]').forEach((b) => b.addEventListener('click', () => {
       state.mode = b.getAttribute('data-mode');
       layout();
@@ -484,10 +841,7 @@ const StarlightScene = (() => {
         onChange();
       }));
       root.querySelector('#judgeBtn').addEventListener('click', () => {
-        const chosen = KEYS.filter((k) => state.picked[k]);
-        sim.judged = true;
-        sim.correct = chosen.length === sim.answer.length &&
-          sim.answer.every((k) => chosen.includes(k));
+        judge();
         layout();
         onChange();
       });
@@ -514,6 +868,8 @@ const StarlightScene = (() => {
           <b>${sim.answer.reduce((s, k) => s + ELEMENTS[k].lines.length, 0)}개</b></div>
         <div class="row"><span>내가 고른 원소</span>
           <b class="big">${chosen.length ? chosen.join(', ') : '— (아직)'}</b></div>
+        <div class="row"><span>파장 커서</span>
+          <b>${Math.round(cursorNm)} nm${onAbsLine() ? ' · 흡수선 위!' : ''}</b></div>
         ${sim.judged ? `
         <div class="row"><span>판정</span>
           <b class="big">${sim.correct ? '🎯 정답!' : '❌ 다시 시도'}</b></div>
